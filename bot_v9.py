@@ -279,31 +279,44 @@ async def get_ranges_for_carrier(app_name, country, carrier):
     return ranges
 
 async def api_get_number(range_val, app_name="FACEBOOK"):
-    try:
-        token, session = await get_token()
-        if not token:
-            return {"error": "Login failed"}
-        clean_range = ''.join(c for c in range_val.upper() if c.isdigit() or c == 'X')
-        if not clean_range:
-            return {"error": "Invalid range"}
-        x_count = len(clean_range) - len(clean_range.rstrip('X'))
-        if x_count < 3:
-            clean_range = clean_range.rstrip('X') + 'XXX'
-        payload = {
-            "range": clean_range,
-            "is_national": False,
-            "remove_plus": False,
-            "app": app_name
-        }
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.post(
-                f"{BASE_URL}/mdashboard/getnum/number",
-                json=payload,
-                headers=get_headers(token, session)
-            )
-        return res.json()
-    except Exception as e:
-        return {"error": str(e)}
+    clean_range = ''.join(c for c in range_val.upper() if c.isdigit() or c == 'X')
+    if not clean_range:
+        return {"error": "Invalid range"}
+    x_count = len(clean_range) - len(clean_range.rstrip('X'))
+    if x_count < 3:
+        clean_range = clean_range.rstrip('X') + 'XXX'
+    payload = {
+        "range": clean_range,
+        "is_national": False,
+        "remove_plus": False,
+        "app": app_name
+    }
+    # Retry delays: 0s, 30s, 60s, 120s
+    retry_delays = [0, 30, 60, 120]
+    for attempt, delay in enumerate(retry_delays):
+        if delay > 0:
+            logging.warning(f"API blocked, waiting {delay}s (attempt {attempt+1})")
+            await asyncio.sleep(delay)
+        try:
+            token, session = await get_token()
+            if not token:
+                continue
+            async with httpx.AsyncClient(timeout=20) as client:
+                res = await client.post(
+                    f"{BASE_URL}/mdashboard/getnum/number",
+                    json=payload,
+                    headers=get_headers(token, session)
+                )
+            data = res.json()
+            msg = str(data.get("message", "")).lower()
+            if any(k in msg for k in ["block", "rate", "limit", "many", "temporary"]):
+                logging.warning(f"Rate limited: {msg}")
+                continue
+            return data
+        except Exception as e:
+            logging.error(f"api_get_number error (attempt {attempt+1}): {e}")
+            continue
+    return {"error": "blocked"}
 
 async def api_get_info(search="", status=""):
     try:
@@ -425,23 +438,15 @@ def otp_not_found_inline(number, range_val):
 #         AUTO OTP CHECK — PLAIN TEXT (NO ERROR)
 # =============================================
 
-async def auto_otp_after_number(message, number, user_id, range_val, context):
-    """
-    Auto OTP check every 5 seconds — runs forever until OTP found or user stops.
-    Plain text message — Markdown error হবে না।
-    """
+async def auto_otp_single(number, user_id, otp_found_event, result_holder):
+    """একটা number এর জন্য auto OTP check।"""
     clean_num = number.replace("+", "").replace(" ", "").strip()
-    user_name = user_data[user_id].get("name", "User")
     app = user_data[user_id].get("app", "FACEBOOK")
 
-    while True:
+    while not otp_found_event.is_set():
         await asyncio.sleep(5)
-
-        # User cancel করলে বন্ধ
-        if user_data[user_id].get("auto_otp_cancel"):
-            user_data[user_id]["auto_otp_cancel"] = False
+        if user_data[user_id].get("auto_otp_cancel") or otp_found_event.is_set():
             return
-
         try:
             data = await api_get_info(search=clean_num, status="success")
             nums = []
@@ -450,10 +455,10 @@ async def auto_otp_after_number(message, number, user_id, range_val, context):
 
             found_otp = None
             found_num = None
-            found_time = ""
             found_raw = ""
+            found_country = ""
+            found_app = app
 
-            # Number দিয়ে match করা
             for n in nums:
                 api_num = str(n.get("number", "")).replace("+", "").strip()
                 if clean_num in api_num or api_num in clean_num:
@@ -462,11 +467,11 @@ async def auto_otp_after_number(message, number, user_id, range_val, context):
                     if otp:
                         found_otp = otp
                         found_num = n.get("number", number)
-                        found_time = n.get("last_activity", "Just now")
                         found_raw = raw_otp
+                        found_country = n.get("country", user_data[user_id].get("country", ""))
+                        found_app = detect_app_from_message(raw_otp, app)
                         break
 
-            # Fallback — status দিয়ে
             if not found_otp:
                 for n in nums:
                     if n.get("status") == "success":
@@ -475,26 +480,70 @@ async def auto_otp_after_number(message, number, user_id, range_val, context):
                         if otp:
                             found_otp = otp
                             found_num = n.get("number", number)
-                            found_time = n.get("last_activity", "Just now")
                             found_raw = raw_otp
+                            found_country = n.get("country", user_data[user_id].get("country", ""))
+                            found_app = detect_app_from_message(raw_otp, app)
                             break
 
-            if found_otp:
-                detected_app = detect_app_from_message(found_raw, app)
-                app_cap = detected_app.capitalize()
-                flag = get_flag(user_data[user_id].get("country", ""))
-                country_r = user_data[user_id].get("country", "")
-                await message.reply_text(
-                    f"🎉 OTP পাওয়া গেছে!\n"
-                    f"🌍 {app_cap} | {flag} {country_r}\n"
-                    f"📞 {found_num}"
-                )
-                await message.reply_text(f"`{found_otp}`", parse_mode="Markdown", reply_markup=main_keyboard(user_id))
+            if found_otp and not otp_found_event.is_set():
+                result_holder["otp"] = found_otp
+                result_holder["number"] = found_num
+                result_holder["raw"] = found_raw
+                result_holder["country"] = found_country
+                result_holder["app"] = found_app
+                otp_found_event.set()
                 return
 
         except Exception as e:
-            logging.error(f"Auto OTP check error: {e}")
+            logging.error(f"Auto OTP check error ({number}): {e}")
             await asyncio.sleep(10)
+
+
+async def auto_otp_multi(message, numbers, user_id, range_val):
+    """3টা number একসাথে check — যেটায় আগে OTP আসবে সেটা দেখাবে।"""
+    app = user_data[user_id].get("app", "FACEBOOK")
+    otp_found_event = asyncio.Event()
+    result_holder = {}
+
+    tasks = [
+        asyncio.create_task(auto_otp_single(num, user_id, otp_found_event, result_holder))
+        for num in numbers
+    ]
+
+    try:
+        await asyncio.wait_for(otp_found_event.wait(), timeout=300)
+    except asyncio.TimeoutError:
+        pass
+
+    for t in tasks:
+        t.cancel()
+
+    if user_data[user_id].get("auto_otp_cancel"):
+        user_data[user_id]["auto_otp_cancel"] = False
+        return
+
+    found_otp = result_holder.get("otp")
+    found_num = result_holder.get("number", "")
+    found_country = result_holder.get("country", user_data[user_id].get("country", ""))
+    found_app = result_holder.get("app", app)
+
+    if found_otp:
+        flag = get_flag(found_country)
+        app_cap = found_app.capitalize()
+        await message.reply_text(
+            f"🌎 Country : {found_country} {app_cap} {flag}\n"
+            f"🔢 Number : {found_num}\n"
+            f"🔑 OTP : `{found_otp}`",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(user_id)
+        )
+    else:
+        await message.reply_text("⏳ OTP আসেনি। পরে আবার try করুন।", reply_markup=main_keyboard(user_id))
+
+
+async def auto_otp_after_number(message, number, user_id, range_val, context):
+    """Backward compatibility."""
+    await auto_otp_multi(message, [number], user_id, range_val)
 
 # =============================================
 #         CORE FUNCTIONS
@@ -519,7 +568,6 @@ async def do_get_number(message, user_id, count=1, user_name="User"):
             num = data["data"]
             number = num.get("number") or num.get("num") or "N/A"
             country_r = num.get("country", "")
-            operator = num.get("operator", "")
             user_data[user_id]["last_number"] = number
             user_data[user_id]["auto_otp_cancel"] = False
             flag = get_flag(country_r)
@@ -530,15 +578,9 @@ async def do_get_number(message, user_id, count=1, user_name="User"):
                 f"🔍 OTP আসার অপেক্ষায়...",
                 reply_markup=after_number_inline(number, range_val)
             )
-            asyncio.create_task(
-                auto_otp_after_number(message, number, user_id, range_val, None)
-            )
+            asyncio.create_task(auto_otp_multi(message, [number], user_id, range_val))
         else:
-            err = data.get("message") or data.get("error") or "Number not found"
-            await message.reply_text(
-                f"❌ Number পাওয়া যায়নি!\n{err}",
-                reply_markup=main_keyboard(user_id)
-            )
+            await message.reply_text("❌ Number পাওয়া যায়নি!", reply_markup=main_keyboard(user_id))
     else:
         # Bulk get
         await message.reply_text(f"⏳ {count}টি number নেওয়া হচ্ছে...")
@@ -592,14 +634,15 @@ async def do_otp_check(message, number, user_id=None):
         app = user_data.get(user_id, {}).get("app", "FACEBOOK") if user_id else "FACEBOOK"
         detected_app = detect_app_from_message(raw_otp, app)
         app_cap = detected_app.capitalize()
-        flag = get_flag(user_data.get(user_id, {}).get("country", ""))
-        country_r = user_data.get(user_id, {}).get("country", "")
+        country_r = n.get("country", "") or (user_data.get(user_id, {}).get("country", "") if user_id else "")
+        flag = get_flag(country_r)
         await message.reply_text(
-            f"🎉 OTP পাওয়া গেছে!\n"
-            f"🌍 {app_cap} | {flag} {country_r}\n"
-            f"📞 {n.get('number', number)}"
+            f"🌎 Country : {country_r} {app_cap} {flag}\n"
+            f"🔢 Number : {n.get('number', number)}\n"
+            f"🔑 OTP : `{otp}`",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(user_id)
         )
-        await message.reply_text(f"`{otp}`", parse_mode="Markdown", reply_markup=main_keyboard(user_id))
     else:
         await message.reply_text(
             "⏳ OTP এখনো আসেনি।\n\nকিছুক্ষণ পর আবার check করুন।",
@@ -912,7 +955,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             num = data_r["data"]
             number = num.get("number") or num.get("num") or "N/A"
             country_r = num.get("country", country)
-            operator = num.get("operator", "")
             user_data[user_id]["last_number"] = number
             flag = get_flag(country_r)
             await query.edit_message_text(
@@ -922,13 +964,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔍 OTP আসার অপেক্ষায়...",
                 reply_markup=after_number_inline(number, range_val)
             )
-            asyncio.create_task(
-                auto_otp_after_number(query.message, number, user_id, range_val, context)
-            )
+            asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val))
         else:
-            err = data_r.get("message") or data_r.get("error") or "not found"
             await query.edit_message_text(
-                f"❌ Number পাওয়া যায়নি!\n{err}",
+                "❌ Number পাওয়া যায়নি!",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Try Again", callback_data=f"range_{range_val}")],
                     [InlineKeyboardButton("◀️ Back", callback_data="back_app")]
@@ -941,12 +980,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("same_"):
         range_val = data.replace("same_", "")
+        app_name = user_data[user_id].get("app", "FACEBOOK")
+        country = user_data[user_id].get("country", "")
         user_data[user_id]["range"] = range_val
         user_data[user_id]["name"] = user_name
         user_data[user_id]["auto_otp_cancel"] = True
         await asyncio.sleep(0.1)
         user_data[user_id]["auto_otp_cancel"] = False
-        await do_get_number(query.message, user_id, count=1, user_name=user_name)
+        data_r = await api_get_number(range_val, app_name)
+        if data_r.get("meta", {}).get("code") == 200:
+            num = data_r["data"]
+            number = num.get("number") or num.get("num") or "N/A"
+            country_r = num.get("country", country)
+            user_data[user_id]["last_number"] = number
+            flag = get_flag(country_r)
+            await query.edit_message_text(
+                f"✅ Number পাওয়া গেছে!\n\n"
+                f"📞 {number}\n"
+                f"📱 {app_name}  {flag} {country_r}\n\n"
+                f"🔍 OTP আসার অপেক্ষায়...",
+                reply_markup=after_number_inline(number, range_val)
+            )
+            asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val))
+        else:
+            await query.edit_message_text("❌ Number পাওয়া যায়নি!", reply_markup=main_keyboard(user_id))
 
     elif data.startswith("viewrange_"):
         range_val = data.replace("viewrange_", "")
