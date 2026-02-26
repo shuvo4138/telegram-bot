@@ -510,13 +510,17 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
         for num in numbers
     ]
 
+    otp_event_was_set = False
     try:
         await asyncio.wait_for(otp_found_event.wait(), timeout=300)
+        otp_event_was_set = otp_found_event.is_set()
     except asyncio.TimeoutError:
         pass
 
     for t in tasks:
         t.cancel()
+    # tasks cancel হওয়ার জন্য একটু wait করি
+    await asyncio.gather(*tasks, return_exceptions=True)
 
     if user_data[user_id].get("auto_otp_cancel"):
         user_data[user_id]["auto_otp_cancel"] = False
@@ -530,14 +534,15 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
     if found_otp:
         flag = get_flag(found_country)
         app_cap = found_app.capitalize()
+        clean_found_num = str(found_num).replace("+", "").strip()
         await message.reply_text(
             f"🌎 Country : {found_country} {app_cap} {flag}\n"
-            f"🔢 Number : {found_num}\n"
+            f"🔢 Number : `{clean_found_num}`\n"
             f"🔑 OTP : `{found_otp}`",
             parse_mode="Markdown",
             reply_markup=main_keyboard(user_id)
         )
-    else:
+    elif not otp_event_was_set:
         await message.reply_text("⏳ OTP আসেনি। পরে আবার try করুন।", reply_markup=main_keyboard(user_id))
 
 
@@ -571,11 +576,13 @@ async def do_get_number(message, user_id, count=1, user_name="User"):
             user_data[user_id]["last_number"] = number
             user_data[user_id]["auto_otp_cancel"] = False
             flag = get_flag(country_r)
+            clean_number = str(number).replace("+", "").strip()
             await message.reply_text(
                 f"✅ Number পাওয়া গেছে!\n\n"
-                f"📞 {number}\n"
+                f"📞 `{clean_number}`\n"
                 f"📱 {app}  {flag} {country_r}\n\n"
                 f"🔍 OTP আসার অপেক্ষায়...",
+                parse_mode="Markdown",
                 reply_markup=after_number_inline(number, range_val)
             )
             asyncio.create_task(auto_otp_multi(message, [number], user_id, range_val))
@@ -636,9 +643,10 @@ async def do_otp_check(message, number, user_id=None):
         app_cap = detected_app.capitalize()
         country_r = n.get("country", "") or (user_data.get(user_id, {}).get("country", "") if user_id else "")
         flag = get_flag(country_r)
+        clean_num_display = str(n.get('number', number)).replace("+", "").strip()
         await message.reply_text(
             f"🌎 Country : {country_r} {app_cap} {flag}\n"
-            f"🔢 Number : {n.get('number', number)}\n"
+            f"🔢 Number : `{clean_num_display}`\n"
             f"🔑 OTP : `{otp}`",
             parse_mode="Markdown",
             reply_markup=main_keyboard(user_id)
