@@ -541,8 +541,7 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
             parse_mode="Markdown",
             reply_markup=main_keyboard(user_id)
         )
-    elif not result_holder.get("otp"):
-        await message.reply_text("⏳ OTP আসেনি। পরে আবার try করুন।", reply_markup=main_keyboard(user_id))
+
 
 
 async def auto_otp_after_number(message, number, user_id, range_val, context):
@@ -964,11 +963,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             country_r = num.get("country", country)
             user_data[user_id]["last_number"] = number
             flag = get_flag(country_r)
+            clean_number = str(number).replace("+", "").strip()
             await query.edit_message_text(
                 f"✅ Number পাওয়া গেছে!\n\n"
-                f"📞 {number}\n"
+                f"📞 `{clean_number}`\n"
                 f"📱 {app_name}  {flag} {country_r}\n\n"
                 f"🔍 OTP আসার অপেক্ষায়...",
+                parse_mode="Markdown",
                 reply_markup=after_number_inline(number, range_val)
             )
             asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val))
@@ -1001,11 +1002,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             country_r = num.get("country", country)
             user_data[user_id]["last_number"] = number
             flag = get_flag(country_r)
+            clean_number = str(number).replace("+", "").strip()
             await query.edit_message_text(
                 f"✅ Number পাওয়া গেছে!\n\n"
-                f"📞 {number}\n"
+                f"📞 `{clean_number}`\n"
                 f"📱 {app_name}  {flag} {country_r}\n\n"
                 f"🔍 OTP আসার অপেক্ষায়...",
+                parse_mode="Markdown",
                 reply_markup=after_number_inline(number, range_val)
             )
             asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val))
