@@ -17,7 +17,7 @@ from telegram.ext import (
 # =============================================
 #              CONFIG
 # =============================================
-BOT_TOKEN = "8128706779:AAFufnGieY95woa8C6Vl-PpJ4HQfYG3F9xM"
+BOT_TOKEN = "8128706779:AAGSaYDAwqmDI5pd6HjD4fsMpDzT5oqEDjw"
 STEXSMS_EMAIL = "shuvosrb86@gmail.com"
 STEXSMS_PASSWORD = "Superdry168"
 BASE_URL = "https://stexsms.com/mapi/v1"
