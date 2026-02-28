@@ -33,11 +33,117 @@ logging.basicConfig(level=logging.INFO)
 
 user_data = {}
 
-# Token cache
-_token_cache = {"token": None, "session": None, "time": 0}
-
 # Console cache
 _console_cache = {"logs": [], "time": 0}
+
+# =============================================
+#         SESSION POOL SYSTEM
+# =============================================
+
+SESSION_POOL_SIZE = 100          # মোট session
+NUMBER_GET_SLOTS = 50            # Number get এর জন্য
+OTP_CHECK_SLOTS = 50             # OTP check এর জন্য
+
+class SessionPool:
+    def __init__(self):
+        self.number_sessions = asyncio.Queue()   # 50টা number get slot
+        self.otp_sessions = asyncio.Queue()      # 50টা otp check slot
+        self.all_sessions = []                   # সব session এর list
+        self.initialized = False
+        self.lock = asyncio.Lock()
+
+    async def initialize(self):
+        """Bot start হলে 100টা session বানাও"""
+        async with self.lock:
+            if self.initialized:
+                return
+            logging.info("🔄 Session pool initialize হচ্ছে...")
+            tasks = [self._login_once() for _ in range(SESSION_POOL_SIZE)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            number_count = 0
+            otp_count = 0
+            for r in results:
+                if isinstance(r, dict) and r.get("token"):
+                    self.all_sessions.append(r)
+                    if number_count < NUMBER_GET_SLOTS:
+                        await self.number_sessions.put(r)
+                        number_count += 1
+                    elif otp_count < OTP_CHECK_SLOTS:
+                        await self.otp_sessions.put(r)
+                        otp_count += 1
+
+            self.initialized = True
+            logging.info(f"✅ Session pool ready! Number: {number_count}, OTP: {otp_count}")
+
+    async def _login_once(self):
+        """একবার login করে session return করো"""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                res = await client.post(
+                    f"{BASE_URL}/mauth/login",
+                    json={"email": STEXSMS_EMAIL, "password": STEXSMS_PASSWORD}
+                )
+            data = res.json()
+            if data.get("meta", {}).get("code") == 200:
+                return {
+                    "token": data["data"]["token"],
+                    "session": data["data"]["session_token"],
+                    "time": time.time()
+                }
+        except Exception as e:
+            logging.error(f"Login error: {e}")
+        return {}
+
+    async def get_number_session(self):
+        """Number get এর জন্য একটা session নাও"""
+        try:
+            session = await asyncio.wait_for(self.number_sessions.get(), timeout=30)
+            # Expire check (25 মিনিট)
+            if time.time() - session.get("time", 0) > 1500:
+                session = await self._login_once()
+                if not session.get("token"):
+                    session = self.all_sessions[0] if self.all_sessions else {}
+            return session
+        except asyncio.TimeoutError:
+            # Fallback: fresh login
+            return await self._login_once()
+
+    async def get_otp_session(self):
+        """OTP check এর জন্য একটা session নাও"""
+        try:
+            session = await asyncio.wait_for(self.otp_sessions.get(), timeout=30)
+            if time.time() - session.get("time", 0) > 1500:
+                session = await self._login_once()
+                if not session.get("token"):
+                    session = self.all_sessions[0] if self.all_sessions else {}
+            return session
+        except asyncio.TimeoutError:
+            return await self._login_once()
+
+    async def return_number_session(self, session):
+        """Number session ব্যবহার শেষে ফেরত দাও"""
+        if session and session.get("token"):
+            await self.number_sessions.put(session)
+
+    async def return_otp_session(self, session):
+        """OTP session ব্যবহার শেষে ফেরত দাও"""
+        if session and session.get("token"):
+            await self.otp_sessions.put(session)
+
+    async def refresh_all(self):
+        """সব session refresh করো"""
+        logging.info("🔄 Session pool refresh হচ্ছে...")
+        self.initialized = False
+        while not self.number_sessions.empty():
+            self.number_sessions.get_nowait()
+        while not self.otp_sessions.empty():
+            self.otp_sessions.get_nowait()
+        self.all_sessions.clear()
+        await self.initialize()
+
+# Global session pool
+session_pool = SessionPool()
 
 ALL_APPS = [
     "FACEBOOK", "INSTAGRAM", "TIKTOK", "SNAPCHAT",
@@ -172,36 +278,31 @@ def has_get100_access(user_id):
 # =============================================
 
 async def get_token():
-    global _token_cache
-    if _token_cache["token"] and (time.time() - _token_cache["time"]) < 1500:
-        return _token_cache["token"], _token_cache["session"]
-    return await fresh_login()
+    """Session pool থেকে token নাও"""
+    session = await session_pool.get_otp_session()
+    await session_pool.return_otp_session(session)
+    return session.get("token"), session.get("session")
 
 async def fresh_login():
-    global _token_cache
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            res = await client.post(
-                f"{BASE_URL}/mauth/login",
-                json={"email": STEXSMS_EMAIL, "password": STEXSMS_PASSWORD}
-            )
-        data = res.json()
-        if data.get("meta", {}).get("code") == 200:
-            token = data["data"]["token"]
-            session = data["data"]["session_token"]
-            _token_cache = {"token": token, "session": session, "time": time.time()}
-            return token, session
-        return None, None
-    except Exception as e:
-        logging.error(f"Login error: {e}")
-        return None, None
+    """Admin command এর জন্য fresh login"""
+    session = await session_pool._login_once()
+    return session.get("token"), session.get("session")
+
+# Channel join cache (10 মিনিট)
+_join_cache = {}
 
 async def check_joined(user_id, bot):
+    now = time.time()
+    cached = _join_cache.get(user_id)
+    if cached and (now - cached["time"]) < 600:
+        return cached["joined"]
     try:
         member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        joined = member.status in ["member", "administrator", "creator"]
+        _join_cache[user_id] = {"joined": joined, "time": now}
+        return joined
     except:
-        return False
+        return True  # Error হলে allow করো
 
 def get_headers(token, session):
     return {
@@ -291,36 +392,38 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
         "remove_plus": False,
         "app": app_name
     }
-    # Retry delays: 0s, 30s, 60s, 120s
-    retry_delays = [0, 30, 60, 120]
-    for attempt, delay in enumerate(retry_delays):
-        if delay > 0:
-            logging.warning(f"API blocked, waiting {delay}s (attempt {attempt+1})")
-            await asyncio.sleep(delay)
-        try:
-            token, session = await get_token()
-            if not token:
-                continue
-            async with httpx.AsyncClient(timeout=20) as client:
-                res = await client.post(
-                    f"{BASE_URL}/mdashboard/getnum/number",
-                    json=payload,
-                    headers=get_headers(token, session)
-                )
-            data = res.json()
-            msg = str(data.get("message", "")).lower()
-            if any(k in msg for k in ["block", "rate", "limit", "many", "temporary"]):
-                logging.warning(f"Rate limited: {msg}")
-                continue
-            return data
-        except Exception as e:
-            logging.error(f"api_get_number error (attempt {attempt+1}): {e}")
-            continue
-    return {"error": "blocked"}
+    # Session pool থেকে dedicated number session নাও
+    session = await session_pool.get_number_session()
+    try:
+        token = session.get("token")
+        sess = session.get("session")
+        if not token:
+            return {"error": "No session available"}
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.post(
+                f"{BASE_URL}/mdashboard/getnum/number",
+                json=payload,
+                headers=get_headers(token, sess)
+            )
+        data = res.json()
+        msg = str(data.get("message", "")).lower()
+        if any(k in msg for k in ["block", "rate", "limit", "many", "temporary"]):
+            logging.warning(f"Rate limited: {msg}")
+            # Session refresh করো
+            session = await session_pool._login_once()
+        return data
+    except Exception as e:
+        logging.error(f"api_get_number error: {e}")
+        return {"error": str(e)}
+    finally:
+        await session_pool.return_number_session(session)
 
 async def api_get_info(search="", status=""):
+    """OTP check এর জন্য dedicated OTP session use করো"""
+    session = await session_pool.get_otp_session()
     try:
-        token, session = await get_token()
+        token = session.get("token")
+        sess = session.get("session")
         if not token:
             return {"error": "Login failed"}
         clean_search = search.replace("+", "").strip()
@@ -330,11 +433,13 @@ async def api_get_info(search="", status=""):
             res = await client.get(
                 f"{BASE_URL}/mdashboard/getnum/info",
                 params=params,
-                headers=get_headers(token, session)
+                headers=get_headers(token, sess)
             )
         return res.json()
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        await session_pool.return_otp_session(session)
 
 # =============================================
 #              HELPERS
@@ -776,7 +881,27 @@ async def cmd_apistatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     token, _ = await fresh_login()
     status = "✅ Connected" if token else "❌ Failed"
-    await update.message.reply_text(f"🔗 API Status: {status}")
+    number_slots = session_pool.number_sessions.qsize()
+    otp_slots = session_pool.otp_sessions.qsize()
+    msg = (
+        f"\U0001f517 API Status: {status}\n\n"
+        f"\U0001f4e6 Session Pool:\n"
+        f"  \U0001f522 Number slots available: {number_slots}/50\n"
+        f"  \U0001f511 OTP slots available: {otp_slots}/50"
+    )
+    await update.message.reply_text(msg)
+
+async def cmd_refreshsessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("🔄 Session pool refresh হচ্ছে...")
+    await session_pool.refresh_all()
+    msg2 = (
+        "Session pool refresh hoyeche!\n"
+        f"Number slots: {session_pool.number_sessions.qsize()}/50\n"
+        f"OTP slots: {session_pool.otp_sessions.qsize()}/50"
+    )
+    await update.message.reply_text(msg2)
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1165,8 +1290,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #              MAIN
 # =============================================
 
+async def post_init(application):
+    """Bot start হওয়ার সাথে সাথে session pool initialize করো"""
+    await session_pool.initialize()
+    logging.info("✅ Session pool initialized!")
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("get", cmd_get))
@@ -1180,6 +1310,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("get100off", cmd_get100off))
     app.add_handler(CommandHandler("addget100", cmd_addget100))
     app.add_handler(CommandHandler("removeget100", cmd_removeget100))
+    app.add_handler(CommandHandler("refreshsessions", cmd_refreshsessions))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ Bot is running...")
