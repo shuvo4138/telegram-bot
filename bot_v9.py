@@ -17,7 +17,7 @@ from telegram.ext import (
 # =============================================
 #              CONFIG
 # =============================================
-BOT_TOKEN = "8128706779:AAGSaYDAwqmDI5pd6HjD4fsMpDzT5oqEDjw"
+BOT_TOKEN = "8128706779:AAFufnGieY95woa8C6Vl-PpJ4HQfYG3F9xM"
 STEXSMS_EMAIL = "shuvosrb86@gmail.com"
 STEXSMS_PASSWORD = "Superdry168"
 BASE_URL = "https://stexsms.com/mapi/v1"
@@ -359,7 +359,7 @@ def init_user(user_id):
 
 def main_keyboard(user_id=None):
     buttons = [
-        [KeyboardButton("🏠 Start"), KeyboardButton("📲 Get Number")],
+        [KeyboardButton("🏠 Start"), KeyboardButton("🎯 Custom Range")],
         [KeyboardButton("📋 My Numbers"), KeyboardButton("📦 Bulk Number")],
     ]
     if user_id and user_id == ADMIN_ID:
@@ -519,7 +519,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
 
     for t in tasks:
         t.cancel()
-    # tasks cancel হওয়ার জন্য একটু wait করি
     await asyncio.gather(*tasks, return_exceptions=True)
 
     if user_data[user_id].get("auto_otp_cancel"):
@@ -1096,7 +1095,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    if text == "📲 Get Number":
+    if text == "🎯 Custom Range":
+        user_data[user_id]["waiting_for"] = "custom_range"
+        await update.message.reply_text(
+            "📡 Range লিখুন:\n\nউদাহরণ: 23762155XXX",
+            reply_markup=main_keyboard(user_id)
+        )
+        return
+
+    if user_data[user_id].get("waiting_for") == "custom_range":
+        user_data[user_id]["waiting_for"] = None
+        user_data[user_id]["range"] = text
         await do_get_number(update.message, user_id, count=1, user_name=user_name)
         return
 
