@@ -1335,8 +1335,16 @@ async def post_init(application):
     await session_pool.initialize()
     logging.info("✅ Session pool initialized!")
 
+async def post_shutdown(application):
+    """Bot shutdown হলে সব pending task cancel করো"""
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logging.info("✅ All tasks cancelled cleanly.")
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).post_init(post_init).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).post_init(post_init).post_shutdown(post_shutdown).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("get", cmd_get))
