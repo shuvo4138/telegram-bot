@@ -270,16 +270,24 @@ def has_get100_access(user_id):
 #         OTP CHANNEL FORWARD
 # =============================================
 
+async def hide_number(number):
+    """Number এর মাঝের অংশ হাইড করো"""
+    num = str(number).replace("+", "").strip()
+    if len(num) > 6:
+        return num[:5] + "★★" + num[-4:]
+    return num
+
 async def send_otp_to_channel(bot, number, otp, app, country, flag):
     """OTP পাওয়া গেলে channel এ forward করো"""
     try:
         app_cap = app.capitalize()
+        hidden_num = await hide_number(number)
         msg = (
             f"🔔 New OTP\n\n"
             f"📱 App: {app_cap}\n"
             f"🌎 Country: {country} {flag}\n"
-            f"📞 Number: `{number}`\n"
-            f"🔑 OTP: `{otp}`\n\n"
+            f"📞 Number: {hidden_num}\n"
+            f"🔑 OTP: `{otp}`\n"
             f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         await bot.send_message(
@@ -483,7 +491,6 @@ def main_keyboard(user_id=None):
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def app_select_inline():
-    """App select — real logo এর জন্য photo পাঠানো হবে আলাদাভাবে"""
     buttons = []
     apps = ALL_APPS.copy()
     while apps:
@@ -537,7 +544,7 @@ def admin_keyboard():
 
 def after_number_inline(number, range_val):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👁️ Check OTP", callback_data=f"otp_{number}")],
+        [InlineKeyboardButton("👁️ Check OTP", url="https://t.me/+SWraCXOQrWM4Mzg9")],
         [InlineKeyboardButton("🔄 Same Range", callback_data=f"same_{range_val}"),
          InlineKeyboardButton("📊 View Range", callback_data=f"viewrange_{range_val}")],
         [InlineKeyboardButton("🛑 Stop Auto OTP", callback_data="stop_auto"),
@@ -546,7 +553,7 @@ def after_number_inline(number, range_val):
 
 def otp_not_found_inline(number, range_val):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👁️ Check OTP", callback_data=f"otp_{number}")],
+        [InlineKeyboardButton("👁️ Check OTP", url="https://t.me/+SWraCXOQrWM4Mzg9")],
         [InlineKeyboardButton("🔄 Same Range", callback_data=f"same_{range_val}"),
          InlineKeyboardButton("🏠 Home", callback_data="go_home")],
     ])
