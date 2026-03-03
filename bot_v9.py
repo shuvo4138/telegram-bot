@@ -25,6 +25,9 @@ ADMIN_ID = 1984916365
 CHANNEL_USERNAME = "@alwaysrvice24hours"
 CHANNEL_LINK = "https://t.me/alwaysrvice24hours"
 
+# OTP Forward Channel
+OTP_CHANNEL_ID = -1002625886518
+
 # Get 100 access control
 GET100_ENABLED = False
 GET100_USERS = set()
@@ -37,23 +40,48 @@ user_data = {}
 _console_cache = {"logs": [], "time": 0}
 
 # =============================================
+#         REAL APP LOGOS (Photo URLs)
+# =============================================
+
+APP_LOGOS = {
+    "FACEBOOK":   "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b8/2021_Facebook_icon.svg/200px-2021_Facebook_icon.svg.png",
+    "INSTAGRAM":  "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a5/Instagram_icon.png/200px-Instagram_icon.png",
+    "TIKTOK":     "https://upload.wikimedia.org/wikipedia/en/thumb/a/a9/TikTok_logo.svg/200px-TikTok_logo.svg.png",
+    "SNAPCHAT":   "https://upload.wikimedia.org/wikipedia/en/thumb/a/ad/Snapchat_logo.svg/200px-Snapchat_logo.svg.png",
+    "TWITTER":    "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6f/Logo_of_Twitter.svg/200px-Logo_of_Twitter.svg.png",
+    "GOOGLE":     "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/200px-Google_%22G%22_logo.svg.png",
+    "WHATSAPP":   "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/WhatsApp.svg/200px-WhatsApp.svg.png",
+    "TELEGRAM":   "https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Telegram_logo.svg/200px-Telegram_logo.svg.png",
+    "CHATGPT":    "https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/ChatGPT_logo.svg/200px-ChatGPT_logo.svg.png",
+    "SHEIN":      "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Shein_logo.png/200px-Shein_logo.png",
+}
+
+APP_EMOJIS = {
+    "FACEBOOK": "📘", "INSTAGRAM": "📸", "TIKTOK": "🎵",
+    "SNAPCHAT": "👻", "TWITTER": "🐦", "GOOGLE": "🔍",
+    "WHATSAPP": "💬", "TELEGRAM": "✈️", "CHATGPT": "🤖",
+    "SHEIN": "👗", "TWILIO": "📞", "TWVERIFY": "✅",
+    "VERIFY": "🔐", "VERIMSG": "💌", "VGSMS": "📡",
+    "WORLDFIRST": "🌏", "GOFUNDME": "💰"
+}
+
+# =============================================
 #         SESSION POOL SYSTEM
 # =============================================
 
-SESSION_POOL_SIZE = 100          # মোট session
-NUMBER_GET_SLOTS = 50            # Number get এর জন্য
-OTP_CHECK_SLOTS = 50             # OTP check এর জন্য
+SESSION_POOL_SIZE = 100
+NUMBER_GET_SLOTS = 50
+OTP_CHECK_SLOTS = 50
 
 class SessionPool:
     def __init__(self):
-        self.number_sessions = asyncio.Queue()   # 50টা number get slot
-        self.otp_sessions = asyncio.Queue()      # 50টা otp check slot
-        self.all_sessions = []                   # সব session এর list
+        self.number_sessions = asyncio.Queue()
+        self.otp_sessions = asyncio.Queue()
+        self.all_sessions = []
         self.initialized = False
         self.lock = asyncio.Lock()
 
     async def initialize(self):
-        """Bot start হলে 100টা session বানাও"""
         async with self.lock:
             if self.initialized:
                 return
@@ -77,7 +105,6 @@ class SessionPool:
             logging.info(f"✅ Session pool ready! Number: {number_count}, OTP: {otp_count}")
 
     async def _login_once(self):
-        """একবার login করে session return করো"""
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 res = await client.post(
@@ -96,21 +123,17 @@ class SessionPool:
         return {}
 
     async def get_number_session(self):
-        """Number get এর জন্য একটা session নাও"""
         try:
             session = await asyncio.wait_for(self.number_sessions.get(), timeout=30)
-            # Expire check (25 মিনিট)
             if time.time() - session.get("time", 0) > 1500:
                 session = await self._login_once()
                 if not session.get("token"):
                     session = self.all_sessions[0] if self.all_sessions else {}
             return session
         except asyncio.TimeoutError:
-            # Fallback: fresh login
             return await self._login_once()
 
     async def get_otp_session(self):
-        """OTP check এর জন্য একটা session নাও"""
         try:
             session = await asyncio.wait_for(self.otp_sessions.get(), timeout=30)
             if time.time() - session.get("time", 0) > 1500:
@@ -122,17 +145,14 @@ class SessionPool:
             return await self._login_once()
 
     async def return_number_session(self, session):
-        """Number session ব্যবহার শেষে ফেরত দাও"""
         if session and session.get("token"):
             await self.number_sessions.put(session)
 
     async def return_otp_session(self, session):
-        """OTP session ব্যবহার শেষে ফেরত দাও"""
         if session and session.get("token"):
             await self.otp_sessions.put(session)
 
     async def refresh_all(self):
-        """সব session refresh করো"""
         logging.info("🔄 Session pool refresh হচ্ছে...")
         self.initialized = False
         while not self.number_sessions.empty():
@@ -142,7 +162,6 @@ class SessionPool:
         self.all_sessions.clear()
         await self.initialize()
 
-# Global session pool
 session_pool = SessionPool()
 
 ALL_APPS = [
@@ -151,15 +170,6 @@ ALL_APPS = [
     "CHATGPT", "SHEIN", "TWILIO", "TWVERIFY",
     "VERIFY", "VERIMSG", "VGSMS", "WORLDFIRST", "GOFUNDME"
 ]
-
-APP_EMOJIS = {
-    "FACEBOOK": "📘", "INSTAGRAM": "📸", "TIKTOK": "🎵",
-    "SNAPCHAT": "👻", "TWITTER": "🐦", "GOOGLE": "🔍",
-    "WHATSAPP": "💬", "TELEGRAM": "✈️", "CHATGPT": "🤖",
-    "SHEIN": "👗", "TWILIO": "📞", "TWVERIFY": "✅",
-    "VERIFY": "🔐", "VERIMSG": "💌", "VGSMS": "📡",
-    "WORLDFIRST": "🌏", "GOFUNDME": "💰"
-}
 
 COUNTRY_FLAGS = {
     "CM": "🇨🇲", "VN": "🇻🇳", "PK": "🇵🇰", "TZ": "🇹🇿",
@@ -266,29 +276,46 @@ def detect_app_from_message(message, default_app=""):
         return "SNAPCHAT"
     return default_app
 
-def format_otp_message(user_name, number, app, otp, time_str):
-    app_cap = app.capitalize()
-    return f"Your {app_cap} OTP\n\n{otp}"
-
 def has_get100_access(user_id):
     return GET100_ENABLED or user_id in GET100_USERS or user_id == ADMIN_ID
+
+# =============================================
+#         OTP CHANNEL FORWARD
+# =============================================
+
+async def send_otp_to_channel(bot, number, otp, app, country, flag):
+    """OTP পাওয়া গেলে channel এ forward করো"""
+    try:
+        app_cap = app.capitalize()
+        msg = (
+            f"🔔 New OTP\n\n"
+            f"📱 App: {app_cap}\n"
+            f"🌎 Country: {country} {flag}\n"
+            f"📞 Number: `{number}`\n"
+            f"🔑 OTP: `{otp}`\n\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        await bot.send_message(
+            chat_id=OTP_CHANNEL_ID,
+            text=msg,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Channel forward error: {e}")
 
 # =============================================
 #              API FUNCTIONS
 # =============================================
 
 async def get_token():
-    """Session pool থেকে token নাও"""
     session = await session_pool.get_otp_session()
     await session_pool.return_otp_session(session)
     return session.get("token"), session.get("session")
 
 async def fresh_login():
-    """Admin command এর জন্য fresh login"""
     session = await session_pool._login_once()
     return session.get("token"), session.get("session")
 
-# Channel join cache (10 মিনিট)
 _join_cache = {}
 
 async def check_joined(user_id, bot):
@@ -302,7 +329,7 @@ async def check_joined(user_id, bot):
         _join_cache[user_id] = {"joined": joined, "time": now}
         return joined
     except:
-        return True  # Error হলে allow করো
+        return True
 
 def get_headers(token, session):
     return {
@@ -392,7 +419,6 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
         "remove_plus": False,
         "app": app_name
     }
-    # Session pool থেকে dedicated number session নাও
     session = await session_pool.get_number_session()
     try:
         token = session.get("token")
@@ -409,7 +435,6 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
         msg = str(data.get("message", "")).lower()
         if any(k in msg for k in ["block", "rate", "limit", "many", "temporary"]):
             logging.warning(f"Rate limited: {msg}")
-            # Session refresh করো
             session = await session_pool._login_once()
         return data
     except Exception as e:
@@ -419,7 +444,6 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
         await session_pool.return_number_session(session)
 
 async def api_get_info(search="", status=""):
-    """OTP check এর জন্য dedicated OTP session use করো"""
     session = await session_pool.get_otp_session()
     try:
         token = session.get("token")
@@ -472,6 +496,7 @@ def main_keyboard(user_id=None):
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def app_select_inline():
+    """App select — real logo এর জন্য photo পাঠানো হবে আলাদাভাবে"""
     buttons = []
     apps = ALL_APPS.copy()
     while apps:
@@ -540,11 +565,10 @@ def otp_not_found_inline(number, range_val):
     ])
 
 # =============================================
-#         AUTO OTP CHECK — PLAIN TEXT (NO ERROR)
+#         AUTO OTP CHECK
 # =============================================
 
 async def auto_otp_single(number, user_id, otp_found_event, result_holder):
-    """একটা number এর জন্য auto OTP check।"""
     clean_num = number.replace("+", "").replace(" ", "").strip()
     app = user_data[user_id].get("app", "FACEBOOK")
 
@@ -604,8 +628,7 @@ async def auto_otp_single(number, user_id, otp_found_event, result_holder):
             await asyncio.sleep(10)
 
 
-async def auto_otp_multi(message, numbers, user_id, range_val):
-    """3টা number একসাথে check — যেটায় আগে OTP আসবে সেটা দেখাবে।"""
+async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
     app = user_data[user_id].get("app", "FACEBOOK")
     otp_found_event = asyncio.Event()
     result_holder = {}
@@ -615,10 +638,8 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
         for num in numbers
     ]
 
-    otp_event_was_set = False
     try:
         await asyncio.wait_for(otp_found_event.wait(), timeout=300)
-        otp_event_was_set = otp_found_event.is_set()
     except asyncio.TimeoutError:
         pass
 
@@ -639,6 +660,8 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
         flag = get_flag(found_country)
         app_cap = found_app.capitalize()
         clean_found_num = str(found_num).replace("+", "").strip()
+
+        # User কে OTP দেখাও
         await message.reply_text(
             f"🌎 Country : {found_country} {app_cap} {flag}\n"
             f"🔢 Number : `{clean_found_num}`\n"
@@ -647,17 +670,20 @@ async def auto_otp_multi(message, numbers, user_id, range_val):
             reply_markup=main_keyboard(user_id)
         )
 
+        # OTP Channel এ forward করো
+        if bot:
+            await send_otp_to_channel(bot, clean_found_num, found_otp, found_app, found_country, flag)
 
 
 async def auto_otp_after_number(message, number, user_id, range_val, context):
     """Backward compatibility."""
-    await auto_otp_multi(message, [number], user_id, range_val)
+    await auto_otp_multi(message, [number], user_id, range_val, bot=context.bot if context else None)
 
 # =============================================
 #         CORE FUNCTIONS
 # =============================================
 
-async def do_get_number(message, user_id, count=1, user_name="User"):
+async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
     init_user(user_id)
     range_val = user_data[user_id].get("range")
     app = user_data[user_id].get("app", "FACEBOOK")
@@ -688,11 +714,10 @@ async def do_get_number(message, user_id, count=1, user_name="User"):
                 parse_mode="Markdown",
                 reply_markup=after_number_inline(number, range_val)
             )
-            asyncio.create_task(auto_otp_multi(message, [number], user_id, range_val))
+            asyncio.create_task(auto_otp_multi(message, [number], user_id, range_val, bot=bot))
         else:
             await message.reply_text("❌ Number পাওয়া যায়নি!", reply_markup=main_keyboard(user_id))
     else:
-        # Bulk get
         await message.reply_text(f"⏳ {count}টি number নেওয়া হচ্ছে...")
         got = 0
         msg = f"📦 BULK GET — Range: {range_val}\n📱 App: {app}\n\n"
@@ -711,9 +736,8 @@ async def do_get_number(message, user_id, count=1, user_name="User"):
         msg += f"\n✅ Total received: {got}/{count}"
         await message.reply_text(msg, reply_markup=main_keyboard(user_id))
 
-async def do_otp_check(message, number, user_id=None):
+async def do_otp_check(message, number, user_id=None, bot=None):
     clean_number = number.replace("+", "").replace(" ", "").strip()
-    user_name = user_data.get(user_id, {}).get("name", "User") if user_id else "User"
 
     await message.reply_text(
         f"🔍 OTP চেক করা হচ্ছে...\n📞 {number}"
@@ -743,17 +767,23 @@ async def do_otp_check(message, number, user_id=None):
         n, otp, raw_otp = found[0]
         app = user_data.get(user_id, {}).get("app", "FACEBOOK") if user_id else "FACEBOOK"
         detected_app = detect_app_from_message(raw_otp, app)
-        app_cap = detected_app.capitalize()
         country_r = n.get("country", "") or (user_data.get(user_id, {}).get("country", "") if user_id else "")
         flag = get_flag(country_r)
         clean_num_display = str(n.get('number', number)).replace("+", "").strip()
-        await message.reply_text(
-            f"🌎 Country : {country_r} {app_cap} {flag}\n"
-            f"🔢 Number : `{clean_num_display}`\n"
-            f"🔑 OTP : `{otp}`",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(user_id)
-        )
+
+        # ✅ Check OTP = শুধু Channel এ পাঠাও
+        if bot:
+            await send_otp_to_channel(bot, clean_num_display, otp, detected_app, country_r, flag)
+        else:
+            app_cap = detected_app.capitalize()
+            await message.reply_text(
+                f"🌎 Country : {country_r} {app_cap} {flag}\n"
+                f"🔢 Number : `{clean_num_display}`\n"
+                f"🔑 OTP : `{otp}`",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(user_id)
+            )
+
     else:
         await message.reply_text(
             "⏳ OTP এখনো আসেনি।\n\nকিছুক্ষণ পর আবার check করুন।",
@@ -797,7 +827,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━",
         reply_markup=main_keyboard(user_id)
     )
-    await update.message.reply_text(
+
+    # App select — real logo সহ
+    await send_app_select_with_logos(update.message, context.bot)
+
+async def send_app_select_with_logos(message, bot):
+    """App select menu — প্রতিটা app এর real logo পাঠাও"""
+    await message.reply_text(
         "📱 Service Select করুন:",
         reply_markup=app_select_inline()
     )
@@ -807,7 +843,7 @@ async def cmd_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     init_user(user_id)
     user_data[user_id]["name"] = user.first_name or "User"
-    await do_get_number(update.message, user_id, count=1, user_name=user.first_name)
+    await do_get_number(update.message, user_id, count=1, user_name=user.first_name, bot=context.bot)
 
 async def cmd_get100(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -816,7 +852,7 @@ async def cmd_get100(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not has_get100_access(user_id):
         await update.message.reply_text("❌ আপনার Get 100 access নেই।")
         return
-    await do_get_number(update.message, user_id, count=100, user_name=user.first_name)
+    await do_get_number(update.message, user_id, count=100, user_name=user.first_name, bot=context.bot)
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -884,10 +920,11 @@ async def cmd_apistatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     number_slots = session_pool.number_sessions.qsize()
     otp_slots = session_pool.otp_sessions.qsize()
     msg = (
-        f"\U0001f517 API Status: {status}\n\n"
-        f"\U0001f4e6 Session Pool:\n"
-        f"  \U0001f522 Number slots available: {number_slots}/50\n"
-        f"  \U0001f511 OTP slots available: {otp_slots}/50"
+        f"🔗 API Status: {status}\n\n"
+        f"📦 Session Pool:\n"
+        f"  🔢 Number slots: {number_slots}/50\n"
+        f"  🔑 OTP slots: {otp_slots}/50\n\n"
+        f"📢 OTP Channel: {OTP_CHANNEL_ID}"
     )
     await update.message.reply_text(msg)
 
@@ -896,12 +933,11 @@ async def cmd_refreshsessions(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await update.message.reply_text("🔄 Session pool refresh হচ্ছে...")
     await session_pool.refresh_all()
-    msg2 = (
-        "Session pool refresh hoyeche!\n"
+    await update.message.reply_text(
+        f"✅ Session pool refresh হয়েছে!\n"
         f"Number slots: {session_pool.number_sessions.qsize()}/50\n"
         f"OTP slots: {session_pool.otp_sessions.qsize()}/50"
     )
-    await update.message.reply_text(msg2)
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -991,6 +1027,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         emoji = APP_EMOJIS.get(app_name, "📱")
+
+        # Real logo পাঠাও যদি থাকে
+        logo_url = APP_LOGOS.get(app_name)
+        if logo_url:
+            try:
+                await query.message.reply_photo(
+                    photo=logo_url,
+                    caption=f"{emoji} *{app_name}*\n\n🌍 Country select করুন:",
+                    parse_mode="Markdown",
+                    reply_markup=country_select_inline(countries, app_name)
+                )
+                await query.message.delete()
+                return
+            except Exception as e:
+                logging.error(f"Logo send error: {e}")
+
         await query.edit_message_text(
             f"{emoji} {app_name}\n\n🌍 Country select করুন:",
             reply_markup=country_select_inline(countries, app_name)
@@ -1097,7 +1149,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=after_number_inline(number, range_val)
             )
-            asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val))
+            asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val, bot=context.bot))
         else:
             await query.edit_message_text(
                 "❌ Number পাওয়া যায়নি!",
@@ -1109,7 +1161,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("otp_"):
         number = data.replace("otp_", "")
-        await do_otp_check(query.message, number, user_id)
+        # ✅ Check OTP — bot pass করো channel forward এর জন্য
+        await do_otp_check(query.message, number, user_id, bot=context.bot)
 
     elif data.startswith("same_"):
         range_val = data.replace("same_", "")
@@ -1136,7 +1189,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=after_number_inline(number, range_val)
             )
-            asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val))
+            asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val, bot=context.bot))
         else:
             await query.edit_message_text("❌ Number পাওয়া যায়নি!", reply_markup=main_keyboard(user_id))
 
@@ -1193,6 +1246,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    elif data.startswith("sendch_"):
+        # Format: sendch_number_otp_app_country
+        parts = data.replace("sendch_", "").split("_", 3)
+        if len(parts) >= 4:
+            ch_number, ch_otp, ch_app, ch_country = parts
+        elif len(parts) == 3:
+            ch_number, ch_otp, ch_app = parts
+            ch_country = ""
+        else:
+            ch_number, ch_otp = parts[0], parts[1]
+            ch_app, ch_country = "FACEBOOK", ""
+        flag = get_flag(ch_country)
+        await send_otp_to_channel(context.bot, ch_number, ch_otp, ch_app, ch_country, flag)
+        await query.answer("✅ Channel এ পাঠানো হয়েছে!")
+
     elif data == "cancel":
         await query.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=main_keyboard(user_id))
 
@@ -1234,7 +1302,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_data[user_id].get("waiting_for") == "custom_range":
         user_data[user_id]["waiting_for"] = None
         user_data[user_id]["range"] = text
-        await do_get_number(update.message, user_id, count=1, user_name=user_name)
+        await do_get_number(update.message, user_id, count=1, user_name=user_name, bot=context.bot)
         return
 
     if text == "📋 My Numbers":
@@ -1247,7 +1315,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Bulk Number এখন বন্ধ আছে।\n\nAdmin চালু করলে use করতে পারবেন।"
             )
         else:
-            await do_get_number(update.message, user_id, count=100, user_name=user_name)
+            await do_get_number(update.message, user_id, count=100, user_name=user_name, bot=context.bot)
         return
 
     if text == "👑 Admin Panel":
@@ -1273,7 +1341,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Admin access নেই।")
         return
 
-    # Broadcast handler
     if user_id == ADMIN_ID and waiting == "broadcast":
         user_data[user_id]["waiting_for"] = None
         sent = 0
@@ -1291,7 +1358,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================
 
 async def post_init(application):
-    """Bot start হওয়ার সাথে সাথে session pool initialize করো"""
     await session_pool.initialize()
     logging.info("✅ Session pool initialized!")
 
