@@ -43,19 +43,6 @@ _console_cache = {"logs": [], "time": 0}
 #         REAL APP LOGOS (Photo URLs)
 # =============================================
 
-APP_LOGOS = {
-    "FACEBOOK":   "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b8/2021_Facebook_icon.svg/200px-2021_Facebook_icon.svg.png",
-    "INSTAGRAM":  "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a5/Instagram_icon.png/200px-Instagram_icon.png",
-    "TIKTOK":     "https://upload.wikimedia.org/wikipedia/en/thumb/a/a9/TikTok_logo.svg/200px-TikTok_logo.svg.png",
-    "SNAPCHAT":   "https://upload.wikimedia.org/wikipedia/en/thumb/a/ad/Snapchat_logo.svg/200px-Snapchat_logo.svg.png",
-    "TWITTER":    "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6f/Logo_of_Twitter.svg/200px-Logo_of_Twitter.svg.png",
-    "GOOGLE":     "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/200px-Google_%22G%22_logo.svg.png",
-    "WHATSAPP":   "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/WhatsApp.svg/200px-WhatsApp.svg.png",
-    "TELEGRAM":   "https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Telegram_logo.svg/200px-Telegram_logo.svg.png",
-    "CHATGPT":    "https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/ChatGPT_logo.svg/200px-ChatGPT_logo.svg.png",
-    "SHEIN":      "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Shein_logo.png/200px-Shein_logo.png",
-}
-
 APP_EMOJIS = {
     "FACEBOOK": "📘", "INSTAGRAM": "📸", "TIKTOK": "🎵",
     "SNAPCHAT": "👻", "TWITTER": "🐦", "GOOGLE": "🔍",
@@ -828,12 +815,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard(user_id)
     )
 
-    # App select — real logo সহ
-    await send_app_select_with_logos(update.message, context.bot)
-
-async def send_app_select_with_logos(message, bot):
-    """App select menu — প্রতিটা app এর real logo পাঠাও"""
-    await message.reply_text(
+    # App select menu
+    await update.message.reply_text(
         "📱 Service Select করুন:",
         reply_markup=app_select_inline()
     )
@@ -1027,22 +1010,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         emoji = APP_EMOJIS.get(app_name, "📱")
-
-        # Real logo পাঠাও যদি থাকে
-        logo_url = APP_LOGOS.get(app_name)
-        if logo_url:
-            try:
-                await query.message.reply_photo(
-                    photo=logo_url,
-                    caption=f"{emoji} *{app_name}*\n\n🌍 Country select করুন:",
-                    parse_mode="Markdown",
-                    reply_markup=country_select_inline(countries, app_name)
-                )
-                await query.message.delete()
-                return
-            except Exception as e:
-                logging.error(f"Logo send error: {e}")
-
         await query.edit_message_text(
             f"{emoji} {app_name}\n\n🌍 Country select করুন:",
             reply_markup=country_select_inline(countries, app_name)
