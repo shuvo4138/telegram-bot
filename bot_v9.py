@@ -1201,17 +1201,26 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
     async def _run():
         nonlocal sent_message, base_text
 
+        OTP_TIMEOUT = 10 * 60  # 10 মিনিট পর auto-cancel
+        elapsed = 0
+
         # ✅ FIX 2: Single task — no multi task race condition
         number = numbers[0]
         inner_task = asyncio.create_task(auto_otp_single(number, user_id, stop_event, on_otp))
 
-        # Loading loop — প্রতি 5 সেকেন্ডে check, কোনো timeout নেই
-        # User "New Number" বা "Change Region" চাপলে stop_event set হবে
+        # Loading loop — প্রতি 5 সেকেন্ডে check
         while not stop_event.is_set():
             if sent_message and not otp_lines:
                 loading = random.choice(LOADING_TEXTS)
                 await update_msg(f"\n{loading}")
             await asyncio.sleep(5)
+            elapsed += 5
+
+            # ⏰ Timeout — user চলে গেলে 10 মিনিট পর auto-cancel
+            if elapsed >= OTP_TIMEOUT:
+                logging.info(f"⏰ OTP timeout — user {user_id}, number {numbers[0]}")
+                stop_event.set()
+                break
 
         stop_event.set()
         inner_task.cancel()
