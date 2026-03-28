@@ -42,7 +42,6 @@ GET100_ENABLED = False
 GET100_USERS = set()
 
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 user_data = {}
 user_locks = {}  # ⬅️ Per-user locks for thread-safe access
@@ -70,9 +69,9 @@ APP_EMOJIS = {
 #         SESSION POOL SYSTEM
 # =============================================
 
-SESSION_POOL_SIZE = 100  # S1: 50 number + 50 OTP
-NUMBER_GET_SLOTS = 50
-OTP_CHECK_SLOTS = 50
+SESSION_POOL_SIZE = 30  # S1: 15 number + 15 OTP (আগে ছিল 100)
+NUMBER_GET_SLOTS = 15
+OTP_CHECK_SLOTS = 15
 
 class SessionPool:
     def __init__(self):
@@ -106,7 +105,7 @@ class SessionPool:
                         otp_count += 1
 
             self.initialized = True
-            logging.info(f"✅ S1 Session pool ready! Number: {number_count}, OTP: {otp_count}")
+            logging.info(f"✅ S1 Session pool ready! Number: {number_count}, OTP: {otp_count} (total: {SESSION_POOL_SIZE})")
 
     async def _login_once(self):
         try:
@@ -193,7 +192,7 @@ class XMintSessionPool:
                 return
             logging.info("🔄 S2 (X.Mint) Session pool initialize হচ্ছে...")
             results = []
-            for i in range(50):  # S2: 25 number + 25 OTP
+            for i in range(20):  # S2: 10 number + 10 OTP (আগে ছিল 50)
                 r = await self._login_once()
                 results.append(r)
                 await asyncio.sleep(1)  # 5sec → 1sec
@@ -203,10 +202,10 @@ class XMintSessionPool:
             for r in results:
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
-                    if number_count < 25:
+                    if number_count < 10:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 25:
+                    elif otp_count < 10:
                         await self.otp_sessions.put(r)
                         otp_count += 1
 
@@ -357,15 +356,14 @@ async def api_get_number_s2(range_val, app_name="FACEBOOK"):
             return {"error": "session_expired"}, new_session if new_session.get("token") else None
 
         result = res.json()
+        # session caller এ যাবে — caller return করবে (S1 এর মতো)
         return result, session
     except Exception as e:
         logging.error(f"❌ api_get_number_s2 error: {e}")
-        return {"error": str(e)}, None
-    finally:
-        # ✅ FINALLY BLOCK: যাই হোক না কেন, session ALWAYS return হবে!
-        # এটাই S2 panel এর slow speed fix করবে
+        # Error হলে session pool এ ফেরত দাও
         if session and session.get("token"):
             await xmint_pool.return_number_session(session)
+        return {"error": str(e)}, None
 
 async def api_get_info_s2(search="", status="", saved_session=None):
     """X.Mint থেকে OTP info নাও"""
@@ -565,7 +563,39 @@ def escape_mdv2(text):
     special = r'\_*[]()~`>#+-=|{}.!'
     return ''.join(f'\\{c}' if c in special else c for c in str(text))
 
-async def send_otp_to_channel(bot, number, otp, app, country, flag, raw_sms="", panel="S1"):
+async def safe_send_message(bot, chat_id, text, **kwargs):
+    """Telegram rate limit সামলানো — RetryAfter হলে wait করে retry"""
+    while True:
+        try:
+            return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        except Exception as e:
+            err = str(e).lower()
+            if "retry after" in err or "flood" in err:
+                import re as _re
+                wait = int(_re.search(r'\d+', str(e)).group() or 5)
+                logging.warning(f"⚠️ Telegram rate limit — {wait}s wait")
+                await asyncio.sleep(wait + 1)
+            else:
+                raise
+
+async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
+    """Edit message — rate limit handle করো"""
+    while True:
+        try:
+            return await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text, **kwargs
+            )
+        except Exception as e:
+            err = str(e).lower()
+            if "retry after" in err or "flood" in err:
+                import re as _re
+                wait = int(_re.search(r'\d+', str(e)).group() or 5)
+                logging.warning(f"⚠️ Telegram rate limit (edit) — {wait}s wait")
+                await asyncio.sleep(wait + 1)
+            else:
+                raise
+
+
     try:
         app_cap = app.capitalize()
         clean_num = str(number).replace("+", "").strip()
@@ -605,7 +635,8 @@ async def send_otp_to_channel(bot, number, otp, app, country, flag, raw_sms="", 
             InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot")
         ]])
 
-        await bot.send_message(
+        await safe_send_message(
+            bot,
             chat_id=OTP_CHANNEL_ID,
             text=msg,
             parse_mode="MarkdownV2",
@@ -780,8 +811,8 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
         clean_range = clean_range.rstrip('X') + 'XXX'
     payload = {
         "range": clean_range,
-        "isNational": False,
-        "isRemovePlus": True,
+        "is_national": False,
+        "remove_plus": False,
         "app": app_name
     }
     session = await session_pool.get_number_session()
@@ -821,18 +852,35 @@ async def api_get_number_dual(range_val, app_name="FACEBOOK"):
         timeout=25
     )
     
+    async def _return_session(task, pool):
+        """Cancel হওয়া task এর session pool এ ফেরত দাও"""
+        if task.done() and not task.cancelled():
+            try:
+                result = task.result()
+                if isinstance(result, tuple):
+                    _, sess = result
+                    if sess and sess.get("token"):
+                        await pool.return_number_session(sess)
+            except Exception:
+                pass
+
     # সফল result নিয়ে আসো — (data, session) tuple unpack করো
     for task in done:
         result_tuple = task.result()
         data, session = result_tuple if isinstance(result_tuple, tuple) else (result_tuple, None)
         if data.get("meta", {}).get("code") == 200:
+            # pending task cancel করো এবং তাদের session return করো
             for t in pending:
                 t.cancel()
+                pool = session_pool if t is s1_task else xmint_pool
+                await _return_session(t, pool)
             return data, session
     
-    # যদি কোনোটা succeed না হয়
+    # যদি কোনোটা succeed না হয় — সব pending cancel করো
     for t in pending:
         t.cancel()
+        pool = session_pool if t is s1_task else xmint_pool
+        await _return_session(t, pool)
     
     if s1_task.done():
         r = s1_task.result()
@@ -2071,6 +2119,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(uid, f"📢 Admin Message:\n\n{text}")
                 sent += 1
+                await asyncio.sleep(0.05)  # Telegram rate limit এড়াতে
             except Exception as e:
                 logging.warning(f"⚠️ Broadcast fail - User {uid}: {e}")
                 failed += 1
