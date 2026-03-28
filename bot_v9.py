@@ -596,6 +596,7 @@ async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
                 raise
 
 
+async def send_otp_to_channel(bot, number, otp, app, country, flag, raw_sms="", panel="S1"):
     try:
         app_cap = app.capitalize()
         clean_num = str(number).replace("+", "").strip()
@@ -635,13 +636,33 @@ async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
             InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot")
         ]])
 
-        await safe_send_message(
-            bot,
-            chat_id=OTP_CHANNEL_ID,
-            text=msg,
-            parse_mode="MarkdownV2",
-            reply_markup=keyboard
-        )
+        # MarkdownV2 fail হলে plain text এ retry করো
+        try:
+            await safe_send_message(
+                bot,
+                chat_id=OTP_CHANNEL_ID,
+                text=msg,
+                parse_mode="MarkdownV2",
+                reply_markup=keyboard
+            )
+        except Exception as md_err:
+            logging.warning(f"⚠️ MarkdownV2 failed, retrying plain: {md_err}")
+            plain_msg = (
+                f"{country} {flag}\n\n"
+                f"📞 {hidden_num}\n"
+                f"🔐 {otp}\n"
+                f"💬 Service: {app_cap} [{panel}]\n"
+                f"────────────\n"
+                f"📩"
+            )
+            if raw_sms:
+                plain_msg += f"\n{raw_sms[:200]}"
+            await safe_send_message(
+                bot,
+                chat_id=OTP_CHANNEL_ID,
+                text=plain_msg,
+                reply_markup=keyboard
+            )
 
         logging.info(f"✅ Channel OTP - {app_cap} ({country})")
 
