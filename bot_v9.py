@@ -69,9 +69,9 @@ APP_EMOJIS = {
 #         SESSION POOL SYSTEM
 # =============================================
 
-SESSION_POOL_SIZE = 30  # S1: 15 number + 15 OTP (আগে ছিল 100)
-NUMBER_GET_SLOTS = 15
-OTP_CHECK_SLOTS = 15
+SESSION_POOL_SIZE = 70  # S1: 35 number + 35 OTP
+NUMBER_GET_SLOTS = 35
+OTP_CHECK_SLOTS = 35
 
 class SessionPool:
     def __init__(self):
@@ -192,7 +192,7 @@ class XMintSessionPool:
                 return
             logging.info("🔄 S2 (X.Mint) Session pool initialize হচ্ছে...")
             results = []
-            for i in range(20):  # S2: 10 number + 10 OTP (আগে ছিল 50)
+            for i in range(50):  # S2: 25 number + 25 OTP
                 r = await self._login_once()
                 results.append(r)
                 await asyncio.sleep(1)  # 5sec → 1sec
@@ -202,10 +202,10 @@ class XMintSessionPool:
             for r in results:
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
-                    if number_count < 10:
+                    if number_count < 25:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 10:
+                    elif otp_count < 25:
                         await self.otp_sessions.put(r)
                         otp_count += 1
 
@@ -1816,6 +1816,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["range"] = range_val
         user_data[user_id]["auto_otp_cancel"] = False
 
+        # ✅ পুরনো session pool এ ফেরত দাও
+        old_session = user_data[user_id].get("number_session")
+        if old_session and old_session.get("token"):
+            _old_panel = user_data[user_id].get("panel", "S1")
+            if _old_panel == "S1":
+                await session_pool.return_number_session(old_session)
+            else:
+                await xmint_pool.return_number_session(old_session)
+            user_data[user_id]["number_session"] = None
+
         # ✅ পুরনো OTP task বন্ধ করো
         cancel_all_otp_tasks(user_id)
         user_data[user_id]["otp_active"] = False
@@ -1867,6 +1877,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         country = user_data[user_id].get("country", "")
         user_data[user_id]["range"] = range_val
         user_data[user_id]["name"] = user_name
+
+        # ✅ পুরনো session pool এ ফেরত দাও
+        old_session = user_data[user_id].get("number_session")
+        if old_session and old_session.get("token"):
+            _old_panel = user_data[user_id].get("panel", "S1")
+            if _old_panel == "S1":
+                await session_pool.return_number_session(old_session)
+            else:
+                await xmint_pool.return_number_session(old_session)
+            user_data[user_id]["number_session"] = None
 
         # ✅ পুরনো OTP task বন্ধ করো
         cancel_all_otp_tasks(user_id)
