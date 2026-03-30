@@ -1076,7 +1076,7 @@ async def db_load_all_users(bot):
 
 def main_keyboard(user_id=None):
     buttons = [
-        [KeyboardButton("🟩 Start"), KeyboardButton("🕹️ Bulk Service")],
+        [KeyboardButton("🟩 Start"), KeyboardButton("🟦 Bulk Number"), KeyboardButton("🟨 Cs Range")],
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -1761,6 +1761,15 @@ async def cmd_refreshsessions(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"OTP slots: {session_pool.otp_sessions.qsize()}/50"
     )
 
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Admin access নেই।")
+        return
+    get100_status = "✅ ON" if GET100_ENABLED else "❌ OFF"
+    msg = "━━━━━━━━━━━━━━━━━━\n👑  ADMIN PANEL\n━━━━━━━━━━━━━━━━━━\n\n📋  /allusers — সব users\n📊  /stats — Bot stats\n🔑  /apistatus — API status\n📢  /broadcast — সবাইকে message\n\n📦  Bulk Number: " + get100_status + "\n/get100on — সবার জন্য চালু\n/get100off — সবার জন্য বন্ধ\n/addget100 <id> — নির্দিষ্ট user চালু\n/removeget100 <id> — নির্দিষ্ট user বন্ধ\n\n━━━━━━━━━━━━━━━━━━"
+    await update.message.reply_text(msg, reply_markup=admin_keyboard())
+
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -2235,7 +2244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    if text in ("✧ Custom Range", "🎯 Custom Range", "🟩 Custom Range"):
+    if text in ("🟨 Cs Range", "✧ Custom Range", "🎯 Custom Range", "🟩 Custom Range"):
         user_data[user_id]["waiting_for"] = "custom_range"
         await update.message.reply_text(
             "📡 Range লিখুন:\n\nউদাহরণ: 23762155XXX",
@@ -2253,7 +2262,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_mynum(update, context)
         return
 
-    if text in ("🕹️ Bulk Service", "✧ Bulk Service", "📦 Bulk Number", "✧ Bulk Number"):
+    if text in ("🟦 Bulk Number", "🕹️ Bulk Service", "✧ Bulk Service", "📦 Bulk Number", "✧ Bulk Number"):
         if not has_get100_access(user_id):
             await update.message.reply_text(
                 "❌ Bulk Number এখন বন্ধ আছে।\n\nAdmin চালু করলে use করতে পারবেন।"
@@ -2360,6 +2369,7 @@ if __name__ == "__main__":
     app.add_error_handler(error_handler)
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("get", cmd_get))
     app.add_handler(CommandHandler("get100", cmd_get100))
