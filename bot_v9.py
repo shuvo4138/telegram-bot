@@ -158,38 +158,65 @@ class SessionPool:
                     f"{BASE_URL}/mauth/login",
                     json={"email": STEXSMS_EMAIL, "password": STEXSMS_PASSWORD}
                 )
-            data = res.json()
+            if res.status_code == 403:
+                logging.error("S1: 403 Forbidden")
+                return {}
+            if res.status_code != 200:
+                logging.warning(f"S1: HTTP {res.status_code}")
+                return {}
+            try:
+                data = res.json()
+            except Exception as e:
+                logging.error(f"S1: Invalid JSON - {e}")
+                return {}
             if data.get("meta", {}).get("code") == 200:
-                return {
-                    "token": data["data"]["token"],
-                    "session": data["data"]["session_token"],
-                    "time": time.time()
-                }
+                token = data["data"].get("token")
+                session_token = data["data"].get("session_token")
+                if token:
+                    return {
+                        "token": token,
+                        "session": session_token,
+                        "time": time.time()
+                    }
         except Exception as e:
-            logging.error(f"Login error: {e}")
+            logging.error(f"S1 Login error: {e}")
         return {}
 
     async def get_number_session(self):
         try:
             session = await asyncio.wait_for(self.number_sessions.get(), timeout=30)
             if time.time() - session.get("time", 0) > 1500:
-                session = await self._login_once()
-                if not session.get("token"):
-                    session = self.all_sessions[0] if self.all_sessions else {}
+                new_session = await self._login_once()
+                if new_session.get("token"):
+                    return new_session
+                # re-login fail হলে পুরনোটাই ব্যবহার করো
+                session["time"] = time.time()
             return session
         except asyncio.TimeoutError:
-            return await self._login_once()
+            new_session = await self._login_once()
+            if new_session.get("token"):
+                return new_session
+            if self.all_sessions:
+                return self.all_sessions[0]
+            return {}
 
     async def get_otp_session(self):
         try:
             session = await asyncio.wait_for(self.otp_sessions.get(), timeout=30)
             if time.time() - session.get("time", 0) > 1500:
-                session = await self._login_once()
-                if not session.get("token"):
-                    session = self.all_sessions[0] if self.all_sessions else {}
+                new_session = await self._login_once()
+                if new_session.get("token"):
+                    return new_session
+                # re-login fail হলে পুরনোটাই ব্যবহার করো
+                session["time"] = time.time()
             return session
         except asyncio.TimeoutError:
-            return await self._login_once()
+            new_session = await self._login_once()
+            if new_session.get("token"):
+                return new_session
+            if self.all_sessions:
+                return self.all_sessions[0]
+            return {}
 
     async def return_number_session(self, session):
         if session and session.get("token"):
@@ -886,13 +913,31 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
         sess = session.get("session")
         if not token:
             return {"error": "No session available"}, None
+
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.post(
                 f"{BASE_URL}/mdashboard/getnum/number",
                 json=payload,
                 headers=get_headers(token, sess)
             )
-        data = res.json()
+
+        if res.status_code == 403:
+            logging.warning("⚠️ S1 number: 403 — relogin")
+            new_session = await session_pool._login_once()
+            return {"error": "session_expired"}, new_session if new_session.get("token") else None
+
+        if res.status_code != 200:
+            logging.warning(f"⚠️ S1 number: HTTP {res.status_code}")
+            await session_pool.return_number_session(session)
+            return {"error": f"HTTP {res.status_code}"}, None
+
+        try:
+            data = res.json()
+        except Exception as e:
+            logging.error(f"S1: Invalid JSON in api_get_number - {e}")
+            await session_pool.return_number_session(session)
+            return {"error": "Invalid JSON"}, None
+
         msg = str(data.get("message", "")).lower()
         if any(k in msg for k in ["block", "rate", "limit", "many", "temporary"]):
             logging.warning(f"Rate limited: {msg}")
@@ -973,7 +1018,17 @@ async def api_get_info(search="", status="", saved_session=None):
                 params=params,
                 headers=get_headers(token, sess)
             )
-        return res.json()
+        if res.status_code == 403:
+            logging.warning("⚠️ S1 info: 403 — session expired")
+            return {"error": "session_expired"}
+        if res.status_code != 200:
+            logging.warning(f"⚠️ S1 info: HTTP {res.status_code}")
+            return {"error": f"HTTP {res.status_code}"}
+        try:
+            return res.json()
+        except Exception as e:
+            logging.error(f"S1: Invalid JSON in api_get_info - {e}")
+            return {"error": "Invalid JSON"}
     except Exception as e:
         return {"error": str(e)}
 
