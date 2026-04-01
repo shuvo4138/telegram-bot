@@ -1881,37 +1881,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["country"] = country
         user_data[user_id]["carrier"] = None
         user_data[user_id]["range"] = None
-        await safe_edit(query, "⏳ Carrier লোড হচ্ছে...")
+        await safe_edit(query, "⏳ Range লোড হচ্ছে...")
+        logs = await get_xmint_console_logs() if panel == "S2" else await get_console_logs()
+        seen = set()
+        ranges = []
+        for log in logs:
+            log_app = log.get("app_name", "").replace("*", "").strip().upper()
+            log_country = log.get("country", "").strip()
+            if log_app == app_name.upper() and log_country == country:
+                r = log.get("range", "").strip()
+                if r and r not in seen:
+                    seen.add(r)
+                    ranges.append({"range": r, "time": log.get("time", "")})
+        if not ranges:
+            await safe_edit(query, 
+                f"❌ {country} তে কোনো range নেই।",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data=f"back_country_{app_name}")]])
+            )
+            return
         flag = get_flag(country)
-        carriers = await get_carriers_for_country(app_name, country, panel=panel)
-        if carriers:
-            await safe_edit(query,
-                f"📱 {app_name}  |  {flag} {country}\n\n📶 Carrier select করুন:",
-                reply_markup=carrier_select_inline(carriers, app_name, country)
-            )
-        else:
-            # carrier না থাকলে সরাসরি range দেখাও
-            logs = await get_xmint_console_logs() if panel == "S2" else await get_console_logs()
-            seen = set()
-            ranges = []
-            for log in logs:
-                log_app = log.get("app_name", "").replace("*", "").strip().upper()
-                log_country = log.get("country", "").strip()
-                if log_app == app_name.upper() and log_country == country:
-                    r = log.get("range", "").strip()
-                    if r and r not in seen:
-                        seen.add(r)
-                        ranges.append({"range": r, "time": log.get("time", "")})
-            if not ranges:
-                await safe_edit(query,
-                    f"❌ {country} তে কোনো range নেই।",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data=f"back_country_{app_name}")]])
-                )
-                return
-            await safe_edit(query,
-                f"📱 {app_name}  |  {flag} {country}\n\n📡 Range select করুন:",
-                reply_markup=range_select_inline(ranges, app_name, country, "")
-            )
+        await safe_edit(query, 
+            "👇",
+            reply_markup=range_select_inline(ranges, app_name, country, "")
+        )
 
     elif data.startswith("back_country_"):
         app_name = data.replace("back_country_", "")
