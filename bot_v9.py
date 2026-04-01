@@ -134,7 +134,7 @@ class SessionPool:
             for i in range(SESSION_POOL_SIZE):
                 r = await self._login_once()
                 results.append(r)
-                await asyncio.sleep(1)  # 1 সেকেন্ড delay
+                await asyncio.sleep(1)
 
             number_count = 0
             otp_count = 0
@@ -189,7 +189,6 @@ class SessionPool:
                 new_session = await self._login_once()
                 if new_session.get("token"):
                     return new_session
-                # re-login fail হলে পুরনোটাই ব্যবহার করো
                 session["time"] = time.time()
             return session
         except asyncio.TimeoutError:
@@ -207,7 +206,6 @@ class SessionPool:
                 new_session = await self._login_once()
                 if new_session.get("token"):
                     return new_session
-                # re-login fail হলে পুরনোটাই ব্যবহার করো
                 session["time"] = time.time()
             return session
         except asyncio.TimeoutError:
@@ -263,10 +261,10 @@ class XMintSessionPool:
                 return
             logging.info("🔄 S2 (X.Mint) Session pool initialize হচ্ছে...")
             results = []
-            for i in range(50):  # S2: 25 number + 25 OTP
+            for i in range(50):
                 r = await self._login_once()
                 results.append(r)
-                await asyncio.sleep(1)  # 5sec → 1sec
+                await asyncio.sleep(1)
 
             number_count = 0
             otp_count = 0
@@ -316,16 +314,13 @@ class XMintSessionPool:
     async def get_number_session(self):
         try:
             session = await asyncio.wait_for(self.number_sessions.get(), timeout=30)
-            # ✅ S1 এর মতো — expire হলে fresh re-login
             if time.time() - session.get("time", 0) > 1500:
                 new_session = await self._login_once()
                 if new_session.get("token"):
                     return new_session
-                # re-login fail হলে পুরনোটাই ব্যবহার করো
                 session["time"] = time.time()
             return session
         except asyncio.TimeoutError:
-            # Queue খালি হলে fresh login করো
             new_session = await self._login_once()
             if new_session.get("token"):
                 return new_session
@@ -336,7 +331,6 @@ class XMintSessionPool:
     async def get_otp_session(self):
         try:
             session = await asyncio.wait_for(self.otp_sessions.get(), timeout=30)
-            # ✅ S1 এর মতো — expire হলে fresh re-login
             if time.time() - session.get("time", 0) > 1500:
                 new_session = await self._login_once()
                 if new_session.get("token"):
@@ -379,11 +373,10 @@ class XMintSessionPool:
 xmint_pool = XMintSessionPool()
 
 # =============================================
-#         X.MINT API FUNCTIONS (S2 - Updated)
+#         X.MINT API FUNCTIONS (S2)
 # =============================================
 
 async def api_get_number_s2(range_val, app_name="FACEBOOK"):
-    """X.Mint থেকে number নাও"""
     logging.info(f"🔵 X.Mint: Getting number for {app_name}, range: {range_val}")
     
     clean_range = ''.join(c for c in range_val.upper() if c.isdigit() or c == 'X')
@@ -427,17 +420,14 @@ async def api_get_number_s2(range_val, app_name="FACEBOOK"):
             return {"error": "session_expired"}, new_session if new_session.get("token") else None
 
         result = res.json()
-        # session caller এ যাবে — caller return করবে (S1 এর মতো)
         return result, session
     except Exception as e:
         logging.error(f"❌ api_get_number_s2 error: {e}")
-        # Error হলে session pool এ ফেরত দাও
         if session and session.get("token"):
             await xmint_pool.return_number_session(session)
         return {"error": str(e)}, None
 
 async def api_get_info_s2(search="", status="", saved_session=None):
-    """X.Mint থেকে OTP info নাও"""
     session = saved_session if saved_session and saved_session.get("token") else await xmint_pool.get_otp_session()
     _from_pool = not (saved_session and saved_session.get("token"))
     try:
@@ -473,7 +463,6 @@ ALL_APPS = [
 ]
 
 COUNTRY_FLAGS = {
-    # আফ্রিকা
     "CM": "🇨🇲", "VN": "🇻🇳", "PK": "🇵🇰", "TZ": "🇹🇿",
     "TJ": "🇹🇯", "TG": "🇹🇬", "NG": "🇳🇬", "GH": "🇬🇭",
     "KE": "🇰🇪", "BD": "🇧🇩", "IN": "🇮🇳", "PH": "🇵🇭",
@@ -517,7 +506,6 @@ COUNTRY_FLAGS = {
 }
 
 COUNTRY_NAME_TO_CODE = {
-    # আফ্রিকা
     "cameroon": "CM", "vietnam": "VN", "pakistan": "PK", "tanzania": "TZ",
     "tajikistan": "TJ", "togo": "TG", "nigeria": "NG", "ghana": "GH",
     "kenya": "KE", "bangladesh": "BD", "india": "IN", "philippines": "PH",
@@ -540,7 +528,6 @@ COUNTRY_NAME_TO_CODE = {
     "lesotho": "LS", "eswatini": "SZ", "swaziland": "SZ",
     "egypt": "EG", "libya": "LY", "tunisia": "TN", "algeria": "DZ",
     "morocco": "MA",
-    # আমেরিকা
     "mexico": "MX", "brazil": "BR", "colombia": "CO", "peru": "PE",
     "venezuela": "VE", "argentina": "AR", "chile": "CL", "ecuador": "EC",
     "bolivia": "BO", "paraguay": "PY", "uruguay": "UY", "guyana": "GY",
@@ -548,7 +535,6 @@ COUNTRY_NAME_TO_CODE = {
     "el salvador": "SV", "nicaragua": "NI", "costa rica": "CR",
     "panama": "PA", "cuba": "CU", "dominican republic": "DO", "haiti": "HT",
     "usa": "US", "united states": "US", "canada": "CA",
-    # এশিয়া
     "thailand": "TH", "laos": "LA", "malaysia": "MY", "singapore": "SG",
     "nepal": "NP", "sri lanka": "LK", "afghanistan": "AF", "iran": "IR",
     "iraq": "IQ", "syria": "SY", "yemen": "YE", "saudi arabia": "SA",
@@ -558,7 +544,6 @@ COUNTRY_NAME_TO_CODE = {
     "georgia": "GE", "kazakhstan": "KZ", "uzbekistan": "UZ",
     "turkmenistan": "TM", "kyrgyzstan": "KG", "mongolia": "MN",
     "timor-leste": "TL", "east timor": "TL",
-    # ইউরোপ
     "russia": "RU", "ukraine": "UA", "belarus": "BY", "moldova": "MD",
     "romania": "RO", "bulgaria": "BG", "serbia": "RS", "croatia": "HR",
     "bosnia": "BA", "north macedonia": "MK", "albania": "AL",
@@ -570,7 +555,6 @@ COUNTRY_NAME_TO_CODE = {
     "ireland": "IE", "netherlands": "NL", "belgium": "BE",
     "luxembourg": "LU", "denmark": "DK", "sweden": "SE",
     "norway": "NO", "finland": "FI", "iceland": "IS",
-    # ওশেনিয়া / অন্যান্য
     "australia": "AU", "new zealand": "NZ",
     "japan": "JP", "south korea": "KR", "china": "CN",
     "taiwan": "TW", "hong kong": "HK",
@@ -623,19 +607,16 @@ def has_get100_access(user_id):
 # =============================================
 
 async def hide_number(number):
-    """Number এর মাঝের অংশ হাইড করো"""
     num = str(number).replace("+", "").strip()
     if len(num) > 6:
         return num[:5] + "★★" + num[-4:]
     return num
 
 def escape_mdv2(text):
-    """MarkdownV2 এর জন্য special chars escape করো"""
     special = r'\_*[]()~`>#+-=|{}.!'
     return ''.join(f'\\{c}' if c in special else c for c in str(text))
 
 async def safe_send_message(bot, chat_id, text, **kwargs):
-    """Telegram rate limit সামলানো — RetryAfter হলে wait করে retry"""
     while True:
         try:
             return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
@@ -650,7 +631,6 @@ async def safe_send_message(bot, chat_id, text, **kwargs):
                 raise
 
 async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
-    """Edit message — rate limit handle করো"""
     while True:
         try:
             return await bot.edit_message_text(
@@ -676,7 +656,6 @@ async def send_otp_to_channel(bot, number, otp, app, country, flag, raw_sms="", 
         else:
             hidden_num = clean_num
 
-        # Country name + flag
         country_code = ""
         if country and country.lower() not in ["postpaid", "post paid", "other"]:
             name_key = country.lower().strip()
@@ -707,7 +686,6 @@ async def send_otp_to_channel(bot, number, otp, app, country, flag, raw_sms="", 
             InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot")
         ]])
 
-        # MarkdownV2 fail হলে plain text এ retry করো
         try:
             await safe_send_message(
                 bot,
@@ -810,7 +788,6 @@ async def get_xmint_console_logs(force=False):
     if not force and _xmint_console_cache["logs"] and (time.time() - _xmint_console_cache["time"]) < 15:
         return _xmint_console_cache["logs"]
     try:
-        # Fresh login করো — pool session 401 দেয়
         async with httpx.AsyncClient(timeout=15) as client:
             login_res = await client.post(
                 f"{XMINT_BASE_URL}/mauth/login",
@@ -943,66 +920,13 @@ async def api_get_number(range_val, app_name="FACEBOOK"):
             logging.warning(f"Rate limited: {msg}")
             await session_pool.return_number_session(session)
             return data, None
-        # ✅ session return না করে caller এ দিই — OTP check এ use হবে
         return data, session
     except Exception as e:
         logging.error(f"api_get_number error: {e}")
         await session_pool.return_number_session(session)
         return {"error": str(e)}, None
 
-# ⚡ Dual-panel concurrent fetch (fast parallel execution)
-async def api_get_number_dual(range_val, app_name="FACEBOOK"):
-    """S1 + S2 দুটো panel থেকে একসাথে নেয় - যেটা আগে সফল হয় সেটা রিটার্ন"""
-    s1_task = asyncio.create_task(api_get_number(range_val, app_name))
-    s2_task = asyncio.create_task(api_get_number_s2(range_val, app_name))
-    
-    done, pending = await asyncio.wait(
-        [s1_task, s2_task],
-        return_when=asyncio.FIRST_COMPLETED,
-        timeout=25
-    )
-    
-    async def _return_session(task, pool):
-        """Cancel হওয়া task এর session pool এ ফেরত দাও"""
-        if task.done() and not task.cancelled():
-            try:
-                result = task.result()
-                if isinstance(result, tuple):
-                    _, sess = result
-                    if sess and sess.get("token"):
-                        await pool.return_number_session(sess)
-            except Exception:
-                pass
-
-    # সফল result নিয়ে আসো — (data, session) tuple unpack করো
-    for task in done:
-        result_tuple = task.result()
-        data, session = result_tuple if isinstance(result_tuple, tuple) else (result_tuple, None)
-        if data.get("meta", {}).get("code") == 200:
-            # pending task cancel করো এবং তাদের session return করো
-            for t in pending:
-                t.cancel()
-                pool = session_pool if t is s1_task else xmint_pool
-                await _return_session(t, pool)
-            return data, session
-    
-    # যদি কোনোটা succeed না হয় — সব pending cancel করো
-    for t in pending:
-        t.cancel()
-        pool = session_pool if t is s1_task else xmint_pool
-        await _return_session(t, pool)
-    
-    if s1_task.done():
-        r = s1_task.result()
-        return (r if not isinstance(r, tuple) else r[0]), (None if not isinstance(r, tuple) else r[1])
-    if s2_task.done():
-        r = s2_task.result()
-        return (r if not isinstance(r, tuple) else r[0]), (None if not isinstance(r, tuple) else r[1])
-    
-    return {"error": "Both panels failed"}, None
-
 async def api_get_info(search="", status="", saved_session=None):
-    # ✅ ONLY saved_session use করো — pool fallback নেই
     if not saved_session or not saved_session.get("token"):
         return {"error": "No session"}
     session = saved_session
@@ -1042,7 +966,7 @@ def init_user(user_id):
         user_data[user_id] = {}
     d = user_data[user_id]
     d.setdefault("app", "FACEBOOK")
-    d.setdefault("panel", "S1")  # S1=StexSMS, S2=X.Mint
+    d.setdefault("panel", "S1")
     d.setdefault("country", None)
     d.setdefault("carrier", None)
     d.setdefault("range", None)
@@ -1058,7 +982,6 @@ def init_user(user_id):
 import json as _json
 
 async def db_save_user(bot, user_id):
-    """User info channel এ save/update করো"""
     try:
         d = user_data.get(user_id, {})
         payload = _json.dumps({
@@ -1077,31 +1000,20 @@ async def db_save_user(bot, user_id):
                 return
             except Exception:
                 pass
-        # নতুন message পাঠাও
         msg = await bot.send_message(chat_id=DB_CHANNEL_ID, text=payload)
         user_db_msg_id[user_id] = msg.message_id
     except Exception as e:
         logging.warning(f"DB save error for {user_id}: {e}")
 
 async def db_load_all_users(bot):
-    """Bot startup এ channel থেকে সব user load করো"""
     loaded = 0
     try:
-        # Channel এর শেষ 200টা message পড়ো
-        # Telegram এ message history পেতে হলে dummy forward trick
-        # সরাসরি getUpdates দিয়ে হয় না — তাই আমরা একটা marker message পাঠাই
-        # এবং তার আগের সব message read করি
         logging.info("📥 DB Channel থেকে user data load হচ্ছে...")
-        
-        # একটা temporary message পাঠিয়ে offset বের করো
         marker = await bot.send_message(chat_id=DB_CHANNEL_ID, text="__LOAD_MARKER__")
         marker_id = marker.message_id
         await bot.delete_message(chat_id=DB_CHANNEL_ID, message_id=marker_id)
-        
-        # marker এর আগের সব message fetch করো (max 200)
         for msg_id in range(max(1, marker_id - 500), marker_id):
             try:
-                # forward করে content পাও
                 fwd = await bot.forward_message(
                     chat_id=DB_CHANNEL_ID,
                     from_chat_id=DB_CHANNEL_ID,
@@ -1120,7 +1032,6 @@ async def db_load_all_users(bot):
                     loaded += 1
             except Exception:
                 continue
-        
         logging.info(f"✅ DB Load complete — {loaded} users loaded")
     except Exception as e:
         logging.error(f"❌ DB Load error: {e}")
@@ -1208,10 +1119,8 @@ def otp_not_found_inline(number, range_val):
 # =============================================
 
 async def safe_edit(query, text, **kwargs):
-    """Safe wrapper for edit_message_text with error handling"""
     try:
         await query.edit_message_text(text, **kwargs)
-        # message id track করো যাতে পরে delete করা যায়
         chat_id = query.message.chat.id
         user_msg[chat_id] = query.message.message_id
         user_range_msg[chat_id] = query.message.message_id
@@ -1221,48 +1130,38 @@ async def safe_edit(query, text, **kwargs):
             logging.warning(f"Edit message error: {e}")
 
 # =============================================
-#         AUTO OTP CHECK (ORIGINAL)
+#   USER OTP TASK TRACKER
 # =============================================
 
-# =============================================
-#   USER OTP TASK TRACKER (max 2 loop per user)
-# =============================================
-# প্রতি user এর active OTP task গুলো track করা হয়
-user_otp_tasks = {}  # { user_id: [task1, task2] }
+user_otp_tasks = {}
 
 def add_otp_task(user_id, task):
-    """User এর task list এ নতুন task add করো, max 2টা"""
     if user_id not in user_otp_tasks:
         user_otp_tasks[user_id] = []
     tasks = user_otp_tasks[user_id]
-    # 2টার বেশি হলে সবচেয়ে পুরনোটা বন্ধ করো
     if len(tasks) >= 2:
         old_task = tasks.pop(0)
         old_task.cancel()
     tasks.append(task)
 
 def cancel_all_otp_tasks(user_id):
-    """User এর সব task বন্ধ করো"""
     tasks = user_otp_tasks.pop(user_id, [])
     for t in tasks:
         t.cancel()
 
 async def auto_otp_single(number, user_id, stop_event, otp_callback):
-    """OTP check — fully locked session, active flag"""
     clean_num = number.replace("+", "").replace(" ", "").strip()
     app = user_data[user_id].get("app", "FACEBOOK")
     panel = user_data[user_id].get("panel", "S1")
     seen_otps = set()
 
     while not stop_event.is_set():
-        # ✅ FIX 2: active flag check
         if not user_data[user_id].get("otp_active", True):
             return
         await asyncio.sleep(5)
         if stop_event.is_set():
             return
         try:
-            # ✅ FIX 1: 100% locked session — কোনো fallback নেই
             saved_session = user_data[user_id].get("number_session")
             if not saved_session or not saved_session.get("token"):
                 logging.warning(f"⚠️ No saved session for user {user_id}")
@@ -1274,13 +1173,11 @@ async def auto_otp_single(number, user_id, stop_event, otp_callback):
                 if data.get("meta", {}).get("code") == 200:
                     nums = data["data"].get("numbers") or []
             else:
-                # S2: S1 এর মতো single call
                 data = await api_get_info_s2(search=clean_num, status="success", saved_session=saved_session)
                 if data.get("meta", {}).get("code") == 200:
                     nums = data["data"].get("numbers") or []
 
             for n in nums:
-                # ✅ FIX 3: Exact match
                 api_num = str(n.get("number", "")).replace("+", "").replace(" ", "").strip()
                 if clean_num != api_num:
                     continue
@@ -1309,7 +1206,6 @@ LOADING_TEXTS = [
 ]
 
 async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
-    # ✅ FIX 4: Duplicate task check
     if user_data[user_id].get("otp_running"):
         return
     user_data[user_id]["otp_running"] = True
@@ -1319,10 +1215,9 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
     panel = user_data[user_id].get("panel", "S1")
     stop_event = asyncio.Event()
 
-    # Message state
     sent_message = None
     base_text = ""
-    otp_lines = []  # Multiple OTP track করো
+    otp_lines = []
 
     def build_message(extra=""):
         text = base_text
@@ -1343,25 +1238,23 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
                 )
             except Exception:
                 pass
+
     async def on_otp(otp, n, raw_otp, found_country, found_app):
         flag = get_flag(found_country)
         app_cap = found_app.capitalize()
         found_num = n.get("number", numbers[0])
         clean_found_num = str(found_num).replace("+", "").strip()
 
-        # ✅ Channel এ সবসময় পাঠাও
         if bot:
             try:
                 await send_otp_to_channel(bot, clean_found_num, otp, found_app, found_country, flag, raw_otp, panel)
             except Exception as e:
                 logging.error(f"❌ Channel send error: {e}")
 
-        # ✅ User কে OTP দাও
         current_num = str(user_data[user_id].get("last_number", "")).replace("+", "").replace(" ", "").strip()
         if current_num in clean_found_num or clean_found_num in current_num:
             otp_index = len(otp_lines) + 1
             otp_lines.append(f"🔑 OTP {otp_index} : `{otp}`")
-            # edit try করো, fail হলে reply করো
             chat_id = message.chat.id
             msg_text = build_message()
             edited = False
@@ -1390,14 +1283,12 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
     async def _run():
         nonlocal sent_message, base_text
 
-        OTP_TIMEOUT = 10 * 60  # 10 মিনিট পর auto-cancel
+        OTP_TIMEOUT = 10 * 60
         elapsed = 0
 
-        # ✅ FIX 2: Single task — no multi task race condition
         number = numbers[0]
         inner_task = asyncio.create_task(auto_otp_single(number, user_id, stop_event, on_otp))
 
-        # Loading loop — প্রতি 5 সেকেন্ডে check
         while not stop_event.is_set():
             if sent_message and not otp_lines:
                 loading = random.choice(LOADING_TEXTS)
@@ -1405,7 +1296,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
             await asyncio.sleep(5)
             elapsed += 5
 
-            # ⏰ Timeout — user চলে গেলে 10 মিনিট পর auto-cancel
             if elapsed >= OTP_TIMEOUT:
                 logging.info(f"⏰ OTP timeout — user {user_id}, number {numbers[0]}")
                 stop_event.set()
@@ -1415,7 +1305,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
         inner_task.cancel()
         await asyncio.gather(inner_task, return_exceptions=True)
 
-        # ✅ Session pool এ return করো
         saved_session = user_data[user_id].get("number_session")
         if saved_session and saved_session.get("token"):
             panel = user_data[user_id].get("panel", "S1")
@@ -1425,11 +1314,9 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
                 await xmint_pool.return_number_session(saved_session)
             user_data[user_id]["number_session"] = None
 
-        # ✅ Flags reset
         user_data[user_id]["otp_running"] = False
         user_data[user_id]["otp_active"] = False
 
-    # ✅ Step by step loading animation
     number = numbers[0]
     country_r = user_data[user_id].get("country_r") or user_data[user_id].get("country", "")
     flag = get_flag(country_r)
@@ -1448,7 +1335,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
     try:
         if chat_id in user_msg:
             try:
-                # ✅ পুরনো message edit করো
                 sent_message = await message.get_bot().edit_message_text(
                     chat_id=chat_id,
                     message_id=user_msg[chat_id],
@@ -1457,7 +1343,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
                     reply_markup=after_number_inline(number, range_val)
                 )
             except Exception:
-                # Edit fail হলে নতুন message
                 sent_message = await message.reply_text(
                     msg_text,
                     parse_mode="Markdown",
@@ -1481,7 +1366,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
 
 
 async def auto_otp_after_number(message, number, user_id, range_val, context):
-    """Backward compatibility."""
     await auto_otp_multi(message, [number], user_id, range_val, bot=context.bot if context else None)
 
 # =============================================
@@ -1503,7 +1387,6 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
         return
 
     if count == 1:
-        # ✅ Loading message পাঠাও
         chat_id = message.chat.id
         try:
             loading_msg = await message.reply_text("⏳ Getting Number...")
@@ -1511,7 +1394,6 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
         except Exception:
             pass
 
-        # ✅ Panel অনুযায়ী API call করো — session সহ return
         if panel == "S1":
             data, number_session = await api_get_number(range_val, app)
         else:
@@ -1526,10 +1408,9 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
             user_data[user_id]["last_number"] = number
             user_data[user_id]["auto_otp_cancel"] = False
             user_data[user_id]["country_r"] = country_r
-            user_data[user_id]["number_session"] = number_session  # ✅ session save
+            user_data[user_id]["number_session"] = number_session
             asyncio.create_task(auto_otp_multi(message, [number], user_id, range_val, bot=bot))
         else:
-            # session return করো
             if number_session:
                 if panel == "S1":
                     await session_pool.return_number_session(number_session)
@@ -1597,7 +1478,6 @@ async def do_otp_check(message, number, user_id=None, bot=None):
         flag = get_flag(country_r)
         clean_num_display = str(n.get('number', number)).replace("+", "").strip()
 
-        # ✅ Check OTP = শুধু Channel এ পাঠাও - raw SMS সহ
         _panel = user_data.get(user_id, {}).get("panel", "S1") if user_id else "S1"
         if bot:
             await send_otp_to_channel(bot, clean_num_display, otp, detected_app, country_r, flag, raw_otp, _panel)
@@ -1628,7 +1508,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user(user_id)
     user_data[user_id]["name"] = user.first_name or "User"
 
-    # ✅ নতুন user হলে DB channel এ save করো
     if is_new_user:
         asyncio.create_task(db_save_user(context.bot, user_id))
 
@@ -1644,7 +1523,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # পুরনো message delete করো
     chat_id = update.message.chat.id
     if chat_id in user_msg:
         try:
@@ -1660,13 +1538,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         user_range_msg.pop(chat_id, None)
 
-    # /start command message delete করো
     try:
         await update.message.delete()
     except Exception:
         pass
 
-    # নতুন service select message পাঠাও
     new_msg = await context.bot.send_message(
         chat_id=chat_id,
         text=(
@@ -1778,13 +1654,11 @@ async def cmd_apistatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    # S1 status
     token_s1, _ = await fresh_login()
     status_s1 = "✅ Connected" if token_s1 else "❌ Failed"
     s1_number_slots = session_pool.number_sessions.qsize()
     s1_otp_slots = session_pool.otp_sessions.qsize()
 
-    # S2 status
     token_s2 = await get_xmint_token()
     status_s2 = "✅ Connected" if token_s2 else "❌ Failed"
     s2_number_slots = xmint_pool.number_sessions.qsize()
@@ -2030,7 +1904,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["range"] = range_val
         user_data[user_id]["auto_otp_cancel"] = False
 
-        # ✅ পুরনো session pool এ ফেরত দাও
         old_session = user_data[user_id].get("number_session")
         if old_session and old_session.get("token"):
             _old_panel = user_data[user_id].get("panel", "S1")
@@ -2040,16 +1913,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await xmint_pool.return_number_session(old_session)
             user_data[user_id]["number_session"] = None
 
-        # ✅ পুরনো OTP task বন্ধ করো
         cancel_all_otp_tasks(user_id)
         user_data[user_id]["otp_active"] = False
         user_data[user_id]["otp_running"] = False
 
-        # ✅ Loading message পাঠাও — id save করো
         loading_msg = await query.message.reply_text("⏳ Getting Number...")
         user_msg[query.message.chat.id] = loading_msg.message_id
 
-        # Panel অনুযায়ী API call করো — session সহ
         if panel == "S1":
             data_r, number_session = await api_get_number(range_val, app_name)
         else:
@@ -2063,7 +1933,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 country_r = user_data[user_id].get("country", "")
             user_data[user_id]["last_number"] = number
             user_data[user_id]["country_r"] = country_r
-            user_data[user_id]["number_session"] = number_session  # ✅ session save
+            user_data[user_id]["number_session"] = number_session
             asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val, bot=context.bot))
         else:
             if number_session:
@@ -2081,7 +1951,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("otp_"):
         number = data.replace("otp_", "")
-        # ✅ Check OTP — bot pass করো channel forward এর জন্য
         await do_otp_check(query.message, number, user_id, bot=context.bot)
 
     elif data.startswith("same_"):
@@ -2092,7 +1961,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["range"] = range_val
         user_data[user_id]["name"] = user_name
 
-        # ✅ পুরনো session pool এ ফেরত দাও
         old_session = user_data[user_id].get("number_session")
         if old_session and old_session.get("token"):
             _old_panel = user_data[user_id].get("panel", "S1")
@@ -2102,12 +1970,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await xmint_pool.return_number_session(old_session)
             user_data[user_id]["number_session"] = None
 
-        # ✅ পুরনো OTP task বন্ধ করো
         cancel_all_otp_tasks(user_id)
         user_data[user_id]["otp_active"] = False
         user_data[user_id]["otp_running"] = False
 
-        # পুরনো message delete করো
         chat_id = query.message.chat.id
         try:
             await query.message.delete()
@@ -2120,7 +1986,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             user_msg.pop(chat_id, None)
 
-        # নতুন loading message পাঠাও
         try:
             loading_msg = await context.bot.send_message(
                 chat_id=chat_id,
@@ -2130,7 +1995,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # Panel অনুযায়ী API call করো — session সহ
         if panel == "S1":
             data_r, number_session = await api_get_number(range_val, app_name)
         else:
@@ -2144,7 +2008,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 country_r = user_data[user_id].get("country", "")
             user_data[user_id]["last_number"] = number
             user_data[user_id]["country_r"] = country_r
-            user_data[user_id]["number_session"] = number_session  # ✅ session save
+            user_data[user_id]["number_session"] = number_session
             asyncio.create_task(auto_otp_multi(query.message, [number], user_id, range_val, bot=context.bot))
         else:
             if number_session:
@@ -2216,7 +2080,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data.startswith("sendch_"):
-        # Format: sendch_number_otp_app_country
         parts = data.replace("sendch_", "").split("_", 3)
         if len(parts) >= 4:
             ch_number, ch_otp, ch_app, ch_country = parts
@@ -2241,7 +2104,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.1)
         user_data[user_id]["auto_otp_cancel"] = False
 
-        # পুরনো message delete করো
         chat_id = query.message.chat.id
         try:
             await query.message.delete()
@@ -2260,7 +2122,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             user_range_msg.pop(chat_id, None)
 
-        # নতুন service select message পাঠাও
         new_msg = await context.bot.send_message(
             chat_id=chat_id,
             text="╔════════════════════╗\n      ''NUMBER PANEL OTP''\n╚════════════════════╝\n\n◈ Select Your Desired Service\n◈ Choose Server To Continue",
@@ -2269,7 +2130,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_msg[chat_id] = new_msg.message_id
 
 # =============================================
-#         MESSAGE HANDLER
+#         MESSAGE HANDLER (FIXED)
 # =============================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2281,7 +2142,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user(user_id)
     user_data[user_id]["name"] = user_name
     waiting = user_data[user_id].get("waiting_for")
-    # ✅ নতুন user হলে DB channel এ save করো
+
     if is_new_user:
         asyncio.create_task(db_save_user(context.bot, user_id))
 
@@ -2295,22 +2156,76 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ✅ FIX: Custom Range check — সবার আগে রাখা হয়েছে
+    if user_data[user_id].get("waiting_for") == "custom_range":
+        user_data[user_id]["waiting_for"] = None
+        range_text = text.strip().upper()
+        # শুধু digit আর X রাখো
+        range_text = ''.join(c for c in range_text if c.isdigit() or c == 'X')
+        if not range_text:
+            await update.message.reply_text(
+                "❌ Invalid range! শুধু নম্বর দিন।\n\nউদাহরণ: 23762155XXX",
+                reply_markup=main_keyboard(user_id)
+            )
+            return
+        # XXX automatically যোগ করো যদি না থাকে
+        if not range_text.endswith("XXX"):
+            range_text = range_text.rstrip("X") + "XXX"
+        user_data[user_id]["range"] = range_text
+        panel = user_data[user_id].get("panel", "S1")
+        app = user_data[user_id].get("app", "FACEBOOK")
+
+        # ✅ Loading message পাঠাও
+        chat_id = update.message.chat.id
+        try:
+            loading_msg = await update.message.reply_text(
+                f"✅ Range: `{range_text}`\n"
+                f"🖥 Panel: {panel}\n"
+                f"📱 App: {app}\n\n"
+                f"⏳ Number নেওয়া হচ্ছে...",
+                parse_mode="Markdown"
+            )
+            user_msg[chat_id] = loading_msg.message_id
+        except Exception:
+            pass
+
+        await do_get_number(update.message, user_id, count=1, user_name=user_name, bot=context.bot)
+        return
+
+    # ✅ FIX: Broadcast check — সবার আগে রাখা হয়েছে
+    if user_id == ADMIN_ID and waiting == "broadcast":
+        user_data[user_id]["waiting_for"] = None
+        sent = 0
+        failed = 0
+        for uid in user_data:
+            try:
+                await context.bot.send_message(uid, f"📢 Admin Message:\n\n{text}")
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logging.warning(f"⚠️ Broadcast fail - User {uid}: {e}")
+                failed += 1
+        await update.message.reply_text(
+            f"✅ {sent} জন কে পাঠানো হয়েছে।\n"
+            f"❌ {failed} জন কে পাঠানো যায়নি।"
+        )
+        return
+
     if text in ("🟩 Start", "✧ Start", "🏠 Start", "/start"):
         await start(update, context)
         return
 
     if text in ("🟨 Cs Range", "✧ Custom Range", "🎯 Custom Range", "🟩 Custom Range"):
+        panel = user_data[user_id].get("panel", "S1")
+        app = user_data[user_id].get("app", "FACEBOOK")
         user_data[user_id]["waiting_for"] = "custom_range"
         await update.message.reply_text(
-            "📡 Range লিখুন:\n\nউদাহরণ: 23762155XXX",
+            f"📡 Custom Range লিখুন:\n\n"
+            f"🖥 Panel: {panel}\n"
+            f"📱 App: {app}\n\n"
+            f"উদাহরণ: 23762155XXX",
             reply_markup=main_keyboard(user_id)
         )
-        return
-
-    if user_data[user_id].get("waiting_for") == "custom_range":
-        user_data[user_id]["waiting_for"] = None
-        user_data[user_id]["range"] = text
-        await do_get_number(update.message, user_id, count=1, user_name=user_name, bot=context.bot)
         return
 
     if text in ("✧ My Numbers", "📋 My Numbers"):
@@ -2349,31 +2264,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Admin access নেই।")
         return
 
-    if user_id == ADMIN_ID and waiting == "broadcast":
-        user_data[user_id]["waiting_for"] = None
-        sent = 0
-        failed = 0
-        for uid in user_data:
-            try:
-                await context.bot.send_message(uid, f"📢 Admin Message:\n\n{text}")
-                sent += 1
-                await asyncio.sleep(0.05)  # Telegram rate limit এড়াতে
-            except Exception as e:
-                logging.warning(f"⚠️ Broadcast fail - User {uid}: {e}")
-                failed += 1
-        await update.message.reply_text(
-            f"✅ {sent} জন কে পাঠানো হয়েছে।\n"
-            f"❌ {failed} জন কে পাঠানো যায়নি।"
-        )
-        return
-
 # =============================================
 #              MAIN
 # =============================================
 
 async def post_init(application):
     try:
-        # ✅ S1 + S2 দুটোই background এ — startup block করবে না
         asyncio.create_task(session_pool.initialize())
         logging.info("✅ S1 pool background init started")
     except Exception as e:
@@ -2385,7 +2281,6 @@ async def post_init(application):
     except Exception as e:
         logging.error(f"⚠️ S2 pool init error: {e}")
 
-    # ✅ DB Channel থেকে user list load করো
     try:
         await db_load_all_users(application.bot)
     except Exception as e:
@@ -2394,7 +2289,6 @@ async def post_init(application):
     logging.info("✅ Bot started - Dual-panel system active")
 
 async def post_shutdown(application):
-    """Bot shutdown হলে সব pending task cancel করো"""
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in tasks:
         task.cancel()
@@ -2402,9 +2296,7 @@ async def post_shutdown(application):
     logging.info("✅ All tasks cancelled cleanly.")
 
 async def error_handler(update, context):
-    """Handle errors globally"""
     error_msg = str(context.error).lower()
-    # Edit message errors suppress করো — এগুলো normal
     if "message is not modified" in error_msg or "bad request" in error_msg or "message to edit not found" in error_msg:
         return
     logging.error(f"Exception while handling an update: {context.error}")
@@ -2420,7 +2312,6 @@ if __name__ == "__main__":
            .concurrent_updates(False)
            .build())
     
-    # Add error handler
     app.add_error_handler(error_handler)
     
     app.add_handler(CommandHandler("start", start))
