@@ -392,11 +392,13 @@ async def api_get_number_s2(range_val, app_name="FACEBOOK"):
         if not token:
             return {"error": "No session available"}, None
 
+        # ✅ FIX: app_name field দুটোই পাঠাও (কোনটা কাজ করে নিশ্চিত না)
         payload = {
             "range": clean_range,
             "isNational": False,
             "isRemovePlus": True,
-            "app": app_name
+            "app": app_name,
+            "app_name": app_name
         }
 
         headers = {
@@ -414,12 +416,55 @@ async def api_get_number_s2(range_val, app_name="FACEBOOK"):
                 headers=headers
             )
 
-        if res.status_code == 403:
-            logging.warning("⚠️ S2 number: 403 — relogin")
-            new_session = await xmint_pool._login_once()
-            return {"error": "session_expired"}, new_session if new_session.get("token") else None
+        # ✅ FIX: সব response log করো debug এর জন্য
+        logging.info(f"🔵 S2 number response: HTTP {res.status_code} | {res.text[:300]}")
 
-        result = res.json()
+        if res.status_code == 403:
+            logging.warning("⚠️ S2 number: 403 — relogin করা হচ্ছে")
+            await xmint_pool.return_number_session(session)  # ✅ FIX: session return করো
+            new_session = await xmint_pool._login_once()
+            if new_session.get("token"):
+                # নতুন session দিয়ে আবার try করো
+                token2 = new_session["token"]
+                headers2 = {
+                    'User-Agent': "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+                    'Accept': "application/json",
+                    'Content-Type': "application/json",
+                    'mauthtoken': token2,
+                    'Cookie': f"mautToken={token2}"
+                }
+                async with httpx.AsyncClient(timeout=20) as client:
+                    res2 = await client.post(
+                        f"{XMINT_BASE_URL}/mdashboard/getnum/number",
+                        json=payload,
+                        headers=headers2
+                    )
+                logging.info(f"🔵 S2 retry response: HTTP {res2.status_code} | {res2.text[:300]}")
+                try:
+                    return res2.json(), new_session
+                except Exception:
+                    return {"error": "Invalid JSON on retry"}, None
+            return {"error": "session_expired"}, None
+
+        # ✅ FIX: status code check
+        if res.status_code != 200:
+            logging.warning(f"⚠️ S2 number: HTTP {res.status_code}")
+            await xmint_pool.return_number_session(session)
+            return {"error": f"HTTP {res.status_code}"}, None
+
+        try:
+            result = res.json()
+        except Exception as e:
+            logging.error(f"❌ S2: Invalid JSON - {e} | raw: {res.text[:200]}")
+            await xmint_pool.return_number_session(session)
+            return {"error": "Invalid JSON"}, None
+
+        # ✅ FIX: response এ number কোন key তে আছে সেটা log করো
+        if result.get("meta", {}).get("code") == 200:
+            logging.info(f"✅ S2 number success! data keys: {list(result.get('data', {}).keys())}")
+        else:
+            logging.warning(f"⚠️ S2 number failed: {result}")
+
         return result, session
     except Exception as e:
         logging.error(f"❌ api_get_number_s2 error: {e}")
@@ -1401,7 +1446,13 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
         
         if data.get("meta", {}).get("code") == 200:
             num = data["data"]
-            number = num.get("number") or num.get("num") or "N/A"
+            # FIX: S2 বিভিন্ন key তে number দিতে পারে
+            number = (
+                num.get("number") or num.get("num") or
+                num.get("phone") or num.get("mobile") or
+                num.get("msisdn") or "N/A"
+            )
+            logging.info(f"✅ Number extracted: {number} | data keys: {list(num.keys())}")
             country_r = num.get("country", "")
             if not country_r or country_r.lower() in ["postpaid", "post paid", "other", "unknown"]:
                 country_r = user_data[user_id].get("country", "")
@@ -1411,12 +1462,14 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
             user_data[user_id]["number_session"] = number_session
             asyncio.create_task(auto_otp_multi(message, [number], user_id, range_val, bot=bot))
         else:
+            logging.warning(f"⚠️ {panel} number get failed: {data}")
             if number_session:
                 if panel == "S1":
                     await session_pool.return_number_session(number_session)
                 else:
                     await xmint_pool.return_number_session(number_session)
-            await message.reply_text("❌ Number পাওয়া যায়নি!", reply_markup=main_keyboard(user_id))
+            err_msg = data.get("message") or data.get("error") or "Number পাওয়া যায়নি"
+            await message.reply_text(f"❌ {err_msg}", reply_markup=main_keyboard(user_id))
     else:
         await message.reply_text(f"⏳ {count}টি number নেওয়া হচ্ছে...")
         got = 0
