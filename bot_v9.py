@@ -2378,9 +2378,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_keyboard(user_id)
             )
             return
-        # XXX automatically যোগ করো যদি না থাকে
-        if not range_text.endswith("XXX"):
-            range_text = range_text.rstrip("X") + "XXX"
+        # XXX automatically যোগ করো — সবসময় exactly 3X
+        range_text = range_text.rstrip("X") + "XXX"
         user_data[user_id]["range"] = range_text
         panel = user_data[user_id].get("panel", "S1")
         app = user_data[user_id].get("app", "FACEBOOK")
