@@ -2384,8 +2384,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         panel = user_data[user_id].get("panel", "S1")
         app = user_data[user_id].get("app", "FACEBOOK")
 
-        # ✅ Loading message পাঠাও
+        # ✅ Loading message পাঠাও — আগের user_msg clear করো যাতে fresh message আসে
         chat_id = update.message.chat.id
+
+        # আগের message delete করার চেষ্টা করো
+        if chat_id in user_msg:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=user_msg[chat_id])
+            except Exception:
+                pass
+            user_msg.pop(chat_id, None)
+
         try:
             loading_msg = await update.message.reply_text(
                 f"✅ Range: `{range_text}`\n"
