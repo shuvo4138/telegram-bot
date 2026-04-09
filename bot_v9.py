@@ -1559,6 +1559,24 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
         logging.error(f"❌ Send message error: {e}")
         return
 
+    # ✅ Reply keyboard restore — inline keyboard send হওয়ার পরে keyboard হারিয়ে যায়
+    try:
+        _bot = message.get_bot() if hasattr(message, 'get_bot') else bot
+        if _bot:
+            kb_msg = await _bot.send_message(
+                chat_id=message.chat.id,
+                text="⌨️",
+                reply_markup=main_keyboard(user_id)
+            )
+            user_kb_msg[message.chat.id] = kb_msg.message_id
+            # সাথে সাথে delete করো — শুধু keyboard restore হলেই হবে
+            try:
+                await _bot.delete_message(chat_id=message.chat.id, message_id=kb_msg.message_id)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.warning(f"⚠️ KB restore error: {e}")
+
     wrapper = asyncio.create_task(_run())
     add_otp_task(user_id, wrapper)
 
