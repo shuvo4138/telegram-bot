@@ -2376,7 +2376,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=main_keyboard(user_id))
 
     elif data == "change_range":
+        # সব পুরানো OTP task cancel করো
+        cancel_all_otp_tasks(user_id)
+
+        # পুরানো number session pool এ ফেরত দাও
+        old_session = user_data[user_id].get("number_session")
+        if old_session and old_session.get("token"):
+            old_panel = user_data[user_id].get("panel", "S1")
+            if old_panel == "S1":
+                await session_pool.return_number_session(old_session)
+            else:
+                await xmint_pool.return_number_session(old_session)
+
+        # সব state reset
         user_data[user_id]["auto_otp_cancel"] = True
+        user_data[user_id]["otp_active"] = False
+        user_data[user_id]["otp_running"] = False
+        user_data[user_id]["number_session"] = None
+        user_data[user_id]["last_number"] = None
+        user_data[user_id]["country_r"] = None
         user_data[user_id]["range"] = None
         user_data[user_id]["country"] = None
         user_data[user_id]["carrier"] = None
