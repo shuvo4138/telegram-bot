@@ -1164,13 +1164,7 @@ def main_keyboard(user_id=None):
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-START_MENU_TEXT = (
-    "╔══════════════════╗\n"
-    "║  🤖 Number Panel OTP BOT  ║\n"
-    "╚══════════════════╝\n\n"
-    "👇 Number নিতে এই get button চাপ দিন:\n\n"
-    "📞 /get"
-)
+START_MENU_TEXT = "╔════════════════════╗\n   🏴‍☠️ NUMBER PANEL OTP 🇧🇩\n╚════════════════════╝\n\n◈ Select Your Service"
 
 APP_DISPLAY_NAMES = {
     "FACEBOOK": "Facebook",
@@ -1764,10 +1758,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    inline_kb = await app_select_inline_dynamic()
+
+    if chat_id in user_msg:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=user_msg[chat_id],
+                text=START_MENU_TEXT,
+                reply_markup=inline_kb
+            )
+            return
+        except Exception:
+            pass
+
     new_msg = await context.bot.send_message(
         chat_id=chat_id,
         text=START_MENU_TEXT,
-        reply_markup=main_keyboard(user_id)
+        reply_markup=inline_kb
     )
     user_msg[chat_id] = new_msg.message_id
 
@@ -2453,6 +2461,64 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_msg[chat_id] = new_msg.message_id
 
 # =============================================
+#         AUTO MENU RESTORE
+# =============================================
+
+async def auto_menu_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User chat delete করলে বা menu না থাকলে auto restore করে।"""
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
+
+    # command ignore
+    if text.startswith("/"):
+        return
+
+    # very short message ignore (spam reduce)
+    if len(text) < 2:
+        return
+
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    init_user(user_id)
+
+    # channel join check
+    joined = await check_joined(user_id, context.bot)
+    if not joined:
+        return  # handle_message এ already handle হবে
+
+    last_msg_id = user_msg.get(chat_id)
+
+    if last_msg_id:
+        try:
+            # menu এখনো আছে কিনা check করো
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=last_msg_id,
+                reply_markup=None  # dummy edit — exception না হলে message exists
+            )
+            # edit succeed মানে message আছে, কিন্তু markup সরিয়ে দিলাম — restore করো
+            keyboard = await app_select_inline_dynamic()
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=last_msg_id,
+                reply_markup=keyboard
+            )
+            return  # menu restored in-place
+        except Exception:
+            pass  # message deleted → নতুন পাঠাও
+
+    # 🔄 menu নেই — নতুন পাঠাও
+    keyboard = await app_select_inline_dynamic()
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="📲 Menu Restored 👇",
+        reply_markup=keyboard
+    )
+    user_msg[chat_id] = msg.message_id
+
+# =============================================
 #         MESSAGE HANDLER
 # =============================================
 
@@ -2720,6 +2786,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("removeget100", cmd_removeget100))
     app.add_handler(CommandHandler("refreshsessions", cmd_refreshsessions))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, auto_menu_restore), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message), group=1)
     print("✅ Bot is running...")
     app.run_polling(drop_pending_updates=True, timeout=30)
