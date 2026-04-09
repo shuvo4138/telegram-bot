@@ -1579,6 +1579,15 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
 
     if count == 1:
         chat_id = message.chat.id
+        
+        # ===== পুরানো OTP message delete করো =====
+        if chat_id in user_msg:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=user_msg[chat_id])
+            except Exception:
+                pass
+            user_msg.pop(chat_id, None)
+        
         if chat_id not in user_msg:
             try:
                 loading_msg = await message.reply_text("⏳ Getting Number...")
