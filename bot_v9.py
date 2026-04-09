@@ -1415,15 +1415,20 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
 
     async def update_msg(extra=""):
         nonlocal sent_message
-        if sent_message:
-            try:
-                await sent_message.edit_text(
-                    build_message(extra),
-                    parse_mode="Markdown",
-                    reply_markup=after_number_inline(numbers[0], range_val)
-                )
-            except Exception:
-                pass
+        chat_id = message.chat.id
+        msg_id = user_msg.get(chat_id) or (sent_message.message_id if sent_message else None)
+        if not msg_id or not bot:
+            return
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=build_message(extra),
+                parse_mode="Markdown",
+                reply_markup=after_number_inline(numbers[0], range_val)
+            )
+        except Exception:
+            pass
 
     async def on_otp(otp, n, raw_otp, found_country, found_app):
         flag = get_flag(found_country)
@@ -1446,13 +1451,15 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
             edited = False
             if chat_id in user_msg and bot:
                 try:
-                    await bot.edit_message_text(
+                    result = await bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=user_msg[chat_id],
                         text=msg_text,
                         parse_mode="Markdown",
                         reply_markup=after_number_inline(numbers[0], range_val)
                     )
+                    if result:
+                        sent_message = result
                     edited = True
                 except Exception:
                     pass
@@ -2499,16 +2506,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #   GET NUMBER — Start button এর মতো কাজ করবে
     # =============================================
     if text == "📞 Get Number":
+        chat_id = update.message.chat.id
+        # আগের messages cleanup — /start এর মতো
+        if chat_id in user_msg:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=user_msg[chat_id])
+            except Exception:
+                pass
+            user_msg.pop(chat_id, None)
+        if chat_id in user_range_msg:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=user_range_msg[chat_id])
+            except Exception:
+                pass
+            user_range_msg.pop(chat_id, None)
         try:
             await update.message.delete()
         except Exception:
             pass
         inline_kb = await app_select_inline_dynamic()
-        new_msg = await update.message.reply_text(
-            START_MENU_TEXT,
+        new_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=START_MENU_TEXT,
             reply_markup=inline_kb
         )
-        user_msg[update.message.chat.id] = new_msg.message_id
+        user_msg[chat_id] = new_msg.message_id
         return
 
     if text in ("📡 Custom Range", "🟨 Cs Range", "✧ Custom Range", "🎯 Custom Range", "🟩 Custom Range"):
