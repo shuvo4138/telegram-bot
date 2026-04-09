@@ -1990,15 +1990,49 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "go_home":
+        cancel_all_otp_tasks(user_id)
+        user_data[user_id]["auto_otp_cancel"] = True
+        user_data[user_id]["otp_active"] = False
+        user_data[user_id]["otp_running"] = False
+        user_data[user_id]["number_session"] = None
+        user_data[user_id]["last_number"] = None
+        user_data[user_id]["country_r"] = None
+        user_data[user_id]["range"] = None
+        user_data[user_id]["country"] = None
+        user_data[user_id]["carrier"] = None
+        await asyncio.sleep(0.1)
+        user_data[user_id]["auto_otp_cancel"] = False
+        chat_id = query.message.chat.id
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        if chat_id in user_msg:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=user_msg[chat_id])
+            except Exception:
+                pass
+            user_msg.pop(chat_id, None)
+        if chat_id in user_range_msg:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=user_range_msg[chat_id])
+            except Exception:
+                pass
+            user_range_msg.pop(chat_id, None)
         inline_kb = await app_select_inline_dynamic()
-        await query.message.reply_text(
-            START_MENU_TEXT,
+        new_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=START_MENU_TEXT,
             reply_markup=inline_kb
         )
+        user_msg[chat_id] = new_msg.message_id
         return
 
     if data == "stop_auto":
+        cancel_all_otp_tasks(user_id)
         user_data[user_id]["auto_otp_cancel"] = True
+        user_data[user_id]["otp_active"] = False
+        user_data[user_id]["otp_running"] = False
         await query.answer("🛑 Auto OTP বন্ধ করা হয়েছে!")
         return
 
@@ -2465,6 +2499,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         range_text = range_text.rstrip("X") + "XXX"
+        # পুরানো OTP task cancel + state reset
+        cancel_all_otp_tasks(user_id)
+        old_session = user_data[user_id].get("number_session")
+        if old_session and old_session.get("token"):
+            _old_panel = user_data[user_id].get("panel", "S1")
+            if _old_panel == "S1":
+                await session_pool.return_number_session(old_session)
+            else:
+                await xmint_pool.return_number_session(old_session)
+        user_data[user_id]["otp_active"] = False
+        user_data[user_id]["otp_running"] = False
+        user_data[user_id]["number_session"] = None
+        user_data[user_id]["last_number"] = None
+        user_data[user_id]["country_r"] = None
+        user_data[user_id]["auto_otp_cancel"] = False
         user_data[user_id]["range"] = range_text
         panel = user_data[user_id].get("panel", "S1")
         app = user_data[user_id].get("app", "FACEBOOK")
@@ -2554,6 +2603,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ("📡 Custom Range", "🟨 Cs Range", "✧ Custom Range", "🎯 Custom Range", "🟩 Custom Range"):
         panel = user_data[user_id].get("panel", "S1")
         app = user_data[user_id].get("app", "FACEBOOK")
+        # পুরানো OTP task cancel করো
+        cancel_all_otp_tasks(user_id)
+        user_data[user_id]["otp_active"] = False
+        user_data[user_id]["otp_running"] = False
         user_data[user_id]["waiting_for"] = "custom_range"
         await update.message.reply_text(
             f"📡 Custom Range লিখুন:\n\n"
