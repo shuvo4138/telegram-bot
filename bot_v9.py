@@ -548,7 +548,16 @@ COUNTRY_FLAGS = {
     "NO": "🇳🇴", "FI": "🇫🇮", "IS": "🇮🇸", "US": "🇺🇸",
     "CA": "🇨🇦", "AU": "🇦🇺", "NZ": "🇳🇿", "JP": "🇯🇵",
     "KR": "🇰🇷", "CN": "🇨🇳", "TW": "🇹🇼", "HK": "🇭🇰",
-    "SS": "🇸🇸", "XK": "🇽🇰",
+    "SS": "🇸🇸", "XK": "🇽🇰", "MO": "🇲🇴", "VG": "🇻🇬",
+    "KY": "🇰🇾", "JM": "🇯🇲", "BS": "🇧🇸", "AG": "🇦🇬",
+    "BB": "🇧🇧", "KN": "🇰🇳", "LC": "🇱🇨", "VC": "🇻🇨",
+    "GD": "🇬🇩", "DM": "🇩🇲", "TT": "🇹🇹", "BZ": "🇧🇿",
+    "GP": "🇬🇵", "MQ": "🇲🇶", "RE": "🇷🇪", "MF": "🇲🇫",
+    "BL": "🇧🇱", "SJ": "🇸🇯", "FK": "🇫🇰", "GS": "🇬🇸",
+    "IO": "🇮🇴", "PN": "🇵🇳", "TC": "🇹🇨", "AI": "🇦🇮",
+    "BM": "🇧🇲", "KI": "🇰🇮", "NR": "🇳🇷", "TO": "🇹🇴",
+    "TV": "🇹🇻", "WF": "🇼🇫", "AS": "🇦🇸", "GU": "🇬🇺",
+    "MP": "🇲🇵", "PR": "🇵🇷", "UM": "🇺🇲", "VI": "🇻🇮",
 }
 
 COUNTRY_NAME_TO_CODE = {
@@ -602,18 +611,57 @@ COUNTRY_NAME_TO_CODE = {
     "luxembourg": "LU", "denmark": "DK", "sweden": "SE",
     "norway": "NO", "finland": "FI", "iceland": "IS",
     "australia": "AU", "new zealand": "NZ",
-    "japan": "JP", "south korea": "KR", "china": "CN",
-    "taiwan": "TW", "hong kong": "HK",
+    "japan": "JP", "south korea": "KR", "korea": "KR", "china": "CN",
+    "taiwan": "TW", "hong kong": "HK", "macau": "MO", "macao": "MO",
+    "british virgin islands": "VG", "cayman islands": "KY",
+    "jamaica": "JM", "bahamas": "BS", "antigua and barbuda": "AG",
+    "barbados": "BB", "saint kitts and nevis": "KN",
+    "saint lucia": "LC", "saint vincent and the grenadines": "VC",
+    "grenada": "GD", "dominica": "DM", "trinidad and tobago": "TT",
+    "belize": "BZ", "guadeloupe": "GP", "martinique": "MQ",
+    "reunion": "RE", "saint martin": "MF", "saint barthelemy": "BL",
+    "svalbard and jan mayen": "SJ", "falkland islands": "FK",
+    "south georgia and south sandwich islands": "GS",
+    "british indian ocean territory": "IO", "pitcairn islands": "PN",
+    "turks and caicos islands": "TC", "anguilla": "AI",
+    "bermuda": "BM", "kiribati": "KI", "nauru": "NR", "tonga": "TO",
+    "tuvalu": "TV", "wallis and futuna": "WF",
+    "american samoa": "AS", "guam": "GU", "northern mariana islands": "MP",
+    "puerto rico": "PR", "u.s. minor outlying islands": "UM",
+    "virgin islands": "VI", "u.s. virgin islands": "VI",
 }
 
 def get_flag(code):
     if not code:
         return "🌍"
+    
     name_key = code.lower().strip()
+    
+    # Direct lookup by full name
     if name_key in COUNTRY_NAME_TO_CODE:
         return COUNTRY_FLAGS.get(COUNTRY_NAME_TO_CODE[name_key], "🌍")
+    
+    # Try 2-letter code directly
     short = code.upper().strip()[:2]
-    return COUNTRY_FLAGS.get(short, "🌍")
+    if short in COUNTRY_FLAGS:
+        return COUNTRY_FLAGS.get(short, "🌍")
+    
+    # Fuzzy matching - split and check partial matches
+    words = name_key.split()
+    for word in words:
+        if word in COUNTRY_NAME_TO_CODE:
+            code_result = COUNTRY_NAME_TO_CODE[word]
+            return COUNTRY_FLAGS.get(code_result, "🌍")
+    
+    # Try removing common suffixes
+    for suffix in [" republic", " kingdom", " federation", " state", " emirate", " islamic"]:
+        if name_key.endswith(suffix):
+            clean = name_key.replace(suffix, "").strip()
+            if clean in COUNTRY_NAME_TO_CODE:
+                code_result = COUNTRY_NAME_TO_CODE[clean]
+                return COUNTRY_FLAGS.get(code_result, "🌍")
+    
+    return "🌍"
 
 def extract_otp(message):
     if not message:
@@ -1468,7 +1516,7 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
         f"   {APP_EMOJIS.get(app, '📱')} {app.upper()} • {flag}\n"
         f"╚══════════════════╝\n"
         f"📞  `{clean_number}`\n"
-        f"🌍  {country_r}\n"
+        f"{flag}  {country_r}\n"
         f"🟢  Status: Assigned"
     )
 
@@ -2439,37 +2487,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # =============================================
-    #   GET NUMBER — BUG FIX (otp_running cancel)
+    #   GET NUMBER — Start button এর মতো কাজ করবে
     # =============================================
     if text == "📞 Get Number":
-        range_val = user_data[user_id].get("range")
-        if not range_val:
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
-            inline_kb = await app_select_inline_dynamic()
-            new_msg = await update.message.reply_text(
-                START_MENU_TEXT,
-                reply_markup=inline_kb
-            )
-            user_msg[update.message.chat.id] = new_msg.message_id
-        else:
-            # আগের OTP task cancel করো
-            cancel_all_otp_tasks(user_id)
-            user_data[user_id]["otp_active"] = False
-            user_data[user_id]["otp_running"] = False
-
-            old_session = user_data[user_id].get("number_session")
-            if old_session and old_session.get("token"):
-                panel = user_data[user_id].get("panel", "S1")
-                if panel == "S1":
-                    await session_pool.return_number_session(old_session)
-                else:
-                    await xmint_pool.return_number_session(old_session)
-                user_data[user_id]["number_session"] = None
-
-            await do_get_number(update.message, user_id, count=1, user_name=user_name, bot=context.bot)
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        inline_kb = await app_select_inline_dynamic()
+        new_msg = await update.message.reply_text(
+            START_MENU_TEXT,
+            reply_markup=inline_kb
+        )
+        user_msg[update.message.chat.id] = new_msg.message_id
         return
 
     if text in ("📡 Custom Range", "🟨 Cs Range", "✧ Custom Range", "🎯 Custom Range", "🟩 Custom Range"):
