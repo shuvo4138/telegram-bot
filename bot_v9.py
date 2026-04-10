@@ -1099,7 +1099,8 @@ async def job_post_live_sms(context):
                     msg += f"\n{quoted_lines}"
 
                 keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot")
+                    InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot"),
+                    InlineKeyboardButton("📢 Main Channel", url=CHANNEL_LINK)
                 ]])
 
                 try:
