@@ -712,7 +712,7 @@ async def send_otp_to_channel(bot, number, otp, app, country, flag, raw_sms="", 
 
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("📢 Main Channel", url=CHANNEL_LINK),
-            InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot")
+            InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot"),
         ]])
 
         try:
@@ -1093,7 +1093,9 @@ async def job_post_live_sms(context):
 
                 range_val = log.get("range", "").strip()
                 log_time = log.get("time", "").strip()
-                unique_id = f"{panel_label}_{range_val}_{log_time}"
+                # Duplicate fix: panel prefix সরিয়ে দিলাম
+                # S1+S2 same range/time হলে একটাই post হবে
+                unique_id = f"{range_val}_{log_time}"
 
                 if unique_id in _posted_sms_ids:
                     continue
@@ -1140,8 +1142,8 @@ async def job_post_live_sms(context):
                     msg += f"\n{quoted_lines}"
 
                 keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📢 Channel", url=CHANNEL_LINK),
-                    InlineKeyboardButton("🤖 Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot")
+                    InlineKeyboardButton("📢 Main Channel", url=CHANNEL_LINK),
+                    InlineKeyboardButton("🤖 Number Bot", url="https://t.me/Fb_KiNG_Seviceotp_bot"),
                 ]])
 
                 messages_to_send.append((msg, keyboard))
@@ -1777,12 +1779,7 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
                 pass
             user_msg.pop(chat_id, None)
 
-        if chat_id not in user_msg:
-            try:
-                loading_msg = await message.reply_text("⏳ Getting Number...")
-                user_msg[chat_id] = loading_msg.message_id
-            except Exception:
-                pass
+        # /get command এ loading reply off করা হয়েছে
 
         if panel == "S1":
             data, number_session = await api_get_number(range_val, app)
@@ -2427,15 +2424,32 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         app_name = user_data[user_id].get("app", "FACEBOOK")
         country = user_data[user_id].get("country", "")
         panel = user_data[user_id].get("panel", "S1")
+
+        # Bug 1 fix — OTP task cancel + state reset
+        cancel_all_otp_tasks(user_id)
+        user_data[user_id]["otp_active"] = False
+        user_data[user_id]["otp_running"] = False
+        user_data[user_id]["range"] = None  # Bug 3 fix — range reset
+
+        # Bug 2 fix — country নেই তো country select এ পাঠাও, app select এ না
         if not country:
-            inline_kb = await app_select_inline_dynamic()
-            await safe_edit(query, START_MENU_TEXT, reply_markup=inline_kb)
+            await safe_edit(query, "⏳ Loading...")
+            countries = await get_countries_for_app(app_name, panel=panel)
+            server_label = "S1" if panel == "S1" else "S2"
+            await safe_edit(query,
+                f"☎️ {app_name.capitalize()} {server_label}\n\n🌍 Country select করুন:",
+                reply_markup=country_select_inline(countries, app_name)
+            )
             return
+
         await safe_edit(query, "⏳ Range লোড হচ্ছে...")
         ranges = await get_all_ranges_for_country(app_name, country, panel=panel)
         flag = get_flag(country)
         if not ranges:
-            await safe_edit(query, f"❌ {country} তে কোনো range নেই.")
+            await safe_edit(query, f"❌ {country} তে কোনো range নেই.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Back", callback_data=f"back_country_{app_name}")
+                ]]))
             return
         await safe_edit(query,
             f"{flag} {country}\n\n📡 Range select করুন:",
