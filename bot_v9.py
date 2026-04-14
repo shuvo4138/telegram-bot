@@ -1708,13 +1708,11 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
     clean_number = str(number).replace("+", "").strip()
 
     base_text = (
-        f"╔══════════════════╗\n"
-        f"   {APP_EMOJIS.get(app, '📱')} {app.upper()} • {flag}\n"
-        f"╚══════════════════╝\n\n"
-        f"📞  `{clean_number}`\n\n"
-        f"{flag}  {country_r}\n\n"
-        f"🟢  Status: Assigned\n\n"
-        f"━━━━━━━━━━━━━━━━━━"
+        f"🔷 {app.upper()} NUMBER\n\n"
+        f"📞 Number : `{clean_number}`\n"
+        f"🌍 Region : {flag} {get_country_code(country_r) or country_r}\n"
+        f"🟢 Status : Active\n"
+        f"─────────────────"
     )
 
     chat_id = message.chat.id
