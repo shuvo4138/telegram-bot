@@ -46,6 +46,7 @@ OTP_CHANNEL_ID = int(os.environ["OTP_CHANNEL_ID"])
 RANGE_CHANNEL_ID = int(os.environ.get("RANGE_CHANNEL_ID", os.environ["OTP_CHANNEL_ID"]))
 
 DB_CHANNEL_ID = -1003846215757
+DB_INDEX_MSG_ID = int(os.environ.get("DB_INDEX_MSG_ID", "0"))
 
 GET100_ENABLED = False
 GET100_USERS = set()
@@ -1360,6 +1361,85 @@ def init_user(user_id):
 #         USER DATABASE (Telegram Channel)
 # =============================================
 
+# ── Helper: channel message forward করে text পড়ো ──
+async def _db_forward_read(bot, msg_id):
+    """একটা channel message forward করে text পড়ো, তারপর delete করো"""
+    try:
+        fwd = await bot.forward_message(
+            chat_id=bot.id,
+            from_chat_id=DB_CHANNEL_ID,
+            message_id=msg_id
+        )
+        text = fwd.text or ""
+        try:
+            await bot.delete_message(chat_id=bot.id, message_id=fwd.message_id)
+        except Exception:
+            pass
+        return text
+    except Exception as e:
+        err = str(e).lower()
+        if "retry after" in err or "flood" in err:
+            import re as _re2
+            nums = _re2.search(r'\d+', str(e))
+            wait = int(nums.group() if nums else 5)
+            logging.warning(f"⚠️ DB flood wait {wait}s")
+            await asyncio.sleep(wait + 2)
+        return None
+
+# ── Index read: INDEX message থেকে {user_id_str: msg_id} map পড়ো ──
+async def db_read_index(bot):
+    global DB_INDEX_MSG_ID
+    if not DB_INDEX_MSG_ID:
+        return {}
+    try:
+        text = await _db_forward_read(bot, DB_INDEX_MSG_ID)
+        if not text:
+            return {}
+        data = _json.loads(text)
+        if data.get("type") == "INDEX":
+            return data.get("map", {})
+        return {}
+    except Exception as e:
+        logging.warning(f"db_read_index error: {e}")
+        return {}
+
+# ── Index write: INDEX message এ map save করো ──
+async def db_write_index(bot, index_map):
+    global DB_INDEX_MSG_ID
+    payload = _json.dumps({"type": "INDEX", "map": index_map}, ensure_ascii=False)
+    if DB_INDEX_MSG_ID:
+        try:
+            await bot.edit_message_text(
+                chat_id=DB_CHANNEL_ID,
+                message_id=DB_INDEX_MSG_ID,
+                text=payload
+            )
+            return
+        except Exception:
+            pass
+    # নতুন index message তৈরি করো
+    msg = await bot.send_message(chat_id=DB_CHANNEL_ID, text=payload)
+    DB_INDEX_MSG_ID = msg.message_id
+    logging.warning(
+        f"✅ DB Index message created! msg_id={DB_INDEX_MSG_ID}\n"
+        f"👉 Railway ENV এ DB_INDEX_MSG_ID={DB_INDEX_MSG_ID} set করো!"
+    )
+
+# ── user parse helper ──
+def _db_apply_user(uid, data, msg_id):
+    if uid not in user_data:
+        user_data[uid] = {}
+    user_data[uid].setdefault("name", data.get("name", "User"))
+    user_data[uid].setdefault("joined", data.get("joined", ""))
+    user_data[uid].setdefault("app", "FACEBOOK")
+    user_data[uid].setdefault("panel", "S1")
+    user_data[uid].setdefault("country", None)
+    user_data[uid].setdefault("range", None)
+    user_data[uid].setdefault("last_number", None)
+    user_data[uid].setdefault("waiting_for", None)
+    user_db_msg_id[uid] = msg_id
+
+# ── SAVE: user save + index update ──
 async def db_save_user(bot, user_id):
     try:
         d = user_data.get(user_id, {})
@@ -1368,28 +1448,74 @@ async def db_save_user(bot, user_id):
             "name": d.get("name", "User"),
             "joined": d.get("joined", datetime.now().strftime("%Y-%m-%d %H:%M"))
         }, ensure_ascii=False)
+
         msg_id = user_db_msg_id.get(user_id)
         if msg_id:
             try:
-                await bot.edit_message_text(chat_id=DB_CHANNEL_ID, message_id=msg_id, text=payload)
-                return
+                await bot.edit_message_text(
+                    chat_id=DB_CHANNEL_ID, message_id=msg_id, text=payload
+                )
+                return  # edit সফল → index update লাগবে না
             except Exception:
                 pass
+
+        # নতুন message
         msg = await bot.send_message(chat_id=DB_CHANNEL_ID, text=payload)
         user_db_msg_id[user_id] = msg.message_id
+
+        # Index update করো (background)
+        asyncio.create_task(_db_update_index(bot, user_id, msg.message_id))
+
     except Exception as e:
         logging.warning(f"DB save error for {user_id}: {e}")
 
+async def _db_update_index(bot, user_id, msg_id):
+    """Index map এ নতুন user add করো"""
+    try:
+        index_map = await db_read_index(bot)
+        index_map[str(user_id)] = msg_id
+        await db_write_index(bot, index_map)
+    except Exception as e:
+        logging.warning(f"Index update error: {e}")
+
+# ── LOAD: FAST mode (index আছে) বা FIRST RUN (scan করো) ──
 async def db_load_all_users(bot):
-    """
-    ✅ Fixed version — Bot নিজের কাছে forward করে text পড়ো, delete করো
-    Same channel-এ forward Telegram allow করে না — তাই bot.id তে forward
-    Scan: 1000 messages | Rate limit friendly
-    """
+    global DB_INDEX_MSG_ID
+
+    # ── FAST MODE: index আছে ──
+    if DB_INDEX_MSG_ID:
+        logging.warning(f"⚡ DB Fast Mode — Index msg_id: {DB_INDEX_MSG_ID}")
+        index_map = await db_read_index(bot)
+        if index_map:
+            loaded = 0
+            failed = 0
+            for uid_str, msg_id in index_map.items():
+                try:
+                    uid = int(uid_str)
+                    text = await _db_forward_read(bot, msg_id)
+                    if text and text.startswith("{") and "user_id" in text:
+                        data = _json.loads(text)
+                        _db_apply_user(uid, data, msg_id)
+                        loaded += 1
+                    else:
+                        failed += 1
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logging.warning(f"Fast load error uid={uid_str}: {e}")
+                    failed += 1
+            logging.warning(f"✅ DB Fast Load done — {loaded} loaded, {failed} failed")
+            return
+
+        logging.warning("⚠️ Index empty — fallback to scan mode")
+
+    # ── FIRST RUN / MIGRATION: 1000 message scan ──
+    logging.warning("🔍 DB First Run Scan — 1000 messages scanning...")
     loaded = 0
     skipped = 0
+    index_map = {}
+
     try:
-        marker = await bot.send_message(chat_id=DB_CHANNEL_ID, text="__LOAD_MARKER__")
+        marker = await bot.send_message(chat_id=DB_CHANNEL_ID, text="__SCAN_MARKER__")
         marker_id = marker.message_id
         await bot.delete_message(chat_id=DB_CHANNEL_ID, message_id=marker_id)
 
@@ -1400,27 +1526,11 @@ async def db_load_all_users(bot):
             text = None
             for attempt in range(2):
                 try:
-                    # ✅ Bot নিজের কাছে forward → text পড়া → delete
-                    fwd = await bot.forward_message(
-                        chat_id=bot.id,
-                        from_chat_id=DB_CHANNEL_ID,
-                        message_id=msg_id
-                    )
-                    text = fwd.text or ""
-                    try:
-                        await bot.delete_message(chat_id=bot.id, message_id=fwd.message_id)
-                    except Exception:
-                        pass
+                    text = await _db_forward_read(bot, msg_id)
                     break
                 except Exception as e:
                     err = str(e).lower()
-                    if "retry after" in err or "flood" in err:
-                        import re as _re2
-                        nums = _re2.search(r'\d+', str(e))
-                        wait = int(nums.group() if nums else 5)
-                        logging.warning(f"⚠️ DB flood wait {wait}s")
-                        await asyncio.sleep(wait + 2)
-                    elif "message not found" in err or "invalid" in err or "message_id_invalid" in err:
+                    if "message not found" in err or "invalid" in err or "message_id_invalid" in err:
                         skipped += 1
                         break
                     elif attempt == 0:
@@ -1429,20 +1539,19 @@ async def db_load_all_users(bot):
                         skipped += 1
 
             if text and text.startswith("{") and "user_id" in text:
+                # INDEX message নিজেই skip করো
+                try:
+                    chk = _json.loads(text)
+                    if chk.get("type") == "INDEX":
+                        skipped += 1
+                        continue
+                except Exception:
+                    pass
                 try:
                     data = _json.loads(text)
                     uid = int(data["user_id"])
-                    if uid not in user_data:
-                        user_data[uid] = {}
-                    user_data[uid].setdefault("name", data.get("name", "User"))
-                    user_data[uid].setdefault("joined", data.get("joined", ""))
-                    user_data[uid].setdefault("app", "FACEBOOK")
-                    user_data[uid].setdefault("panel", "S1")
-                    user_data[uid].setdefault("country", None)
-                    user_data[uid].setdefault("range", None)
-                    user_data[uid].setdefault("last_number", None)
-                    user_data[uid].setdefault("waiting_for", None)
-                    user_db_msg_id[uid] = msg_id
+                    _db_apply_user(uid, data, msg_id)
+                    index_map[str(uid)] = msg_id
                     loaded += 1
                 except Exception as parse_err:
                     logging.warning(f"DB parse error: {parse_err}")
@@ -1453,7 +1562,12 @@ async def db_load_all_users(bot):
             else:
                 await asyncio.sleep(0.15)
 
-        logging.warning(f"✅ DB Load complete — {loaded} loaded, {skipped} skipped")
+        logging.warning(f"✅ DB Scan done — {loaded} users loaded, {skipped} skipped")
+
+        # Index তৈরি করো
+        if index_map:
+            await db_write_index(bot, index_map)
+
     except Exception as e:
         logging.error(f"DB Load error: {e}")
 
@@ -2743,12 +2857,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["otp_active"] = False
         user_data[user_id]["otp_running"] = False
         for msg_dict in [user_msg, user_range_msg]:
-            if chat_id in msg_dict:
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_dict[chat_id])
-                except Exception:
-                    pass
-                msg_dict.pop(chat_id, None)
+            msg_dict.pop(chat_id, None)  # শুধু tracking clear, delete নেই
         try:
             await update.message.delete()
         except Exception:
