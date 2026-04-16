@@ -1363,16 +1363,16 @@ def init_user(user_id):
 
 # ── Helper: channel message forward করে text পড়ো ──
 async def _db_forward_read(bot, msg_id):
-    """একটা channel message forward করে text পড়ো, তারপর delete করো"""
+    """DB channel থেকে message forward করে ADMIN এ পাঠাও, text পড়ো, delete করো"""
     try:
         fwd = await bot.forward_message(
-            chat_id=bot.id,
+            chat_id=ADMIN_ID,
             from_chat_id=DB_CHANNEL_ID,
             message_id=msg_id
         )
         text = fwd.text or ""
         try:
-            await bot.delete_message(chat_id=bot.id, message_id=fwd.message_id)
+            await bot.delete_message(chat_id=ADMIN_ID, message_id=fwd.message_id)
         except Exception:
             pass
         return text
