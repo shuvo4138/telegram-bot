@@ -50,6 +50,9 @@ DB_CHANNEL_ID = -1003846215757
 # Index marker — 0 মানে এখনো index হয়নি, >0 মানে আগে index হয়েছে (skip)
 DB_INDEX_MSG_ID = int(os.environ.get("DB_INDEX_MSG_ID", "0"))
 
+# ✅ DB Scan: last scanned message ID — 0 মানে fresh start (full scan)
+DB_LAST_SCANNED_ID = int(os.environ.get("DB_LAST_SCANNED_ID", "0"))
+
 GET100_ENABLED = False
 GET100_USERS = set()
 
@@ -618,13 +621,85 @@ def get_country_code(country):
         return country.upper()
     return ""
 
+# =============================================
+#   ✅ FIXED: extract_otp — space-separated + fake OTP ignore
+# =============================================
+
+# Fake/placeholder OTP patterns to ignore
+_FAKE_OTPS = {
+    "000000", "111111", "222222", "333333", "444444",
+    "555555", "666666", "777777", "888888", "999999",
+    "00000", "11111", "22222", "33333", "44444",
+    "55555", "66666", "77777", "88888", "99999",
+    "0000", "1111", "2222", "3333", "4444",
+    "5555", "6666", "7777", "8888", "9999",
+    "00000000", "11111111",
+}
+
 def extract_otp(message):
+    """
+    Extract OTP from SMS message.
+    - Handles space-separated OTP like '701 294' → '701294'
+    - Ignores fake/placeholder OTPs like '000000'
+    """
     if not message:
         return None
+
+    # Step 1: Try space-separated 3+3 digit pattern (e.g. Instagram: "701 294")
+    space_match = re.search(r'\b(\d{3})\s(\d{3})\b', message)
+    if space_match:
+        otp = space_match.group(1) + space_match.group(2)
+        if otp not in _FAKE_OTPS:
+            return otp
+
+    # Step 2: Try space-separated 4+4 digit pattern (e.g. "1234 5678")
+    space_match4 = re.search(r'\b(\d{4})\s(\d{4})\b', message)
+    if space_match4:
+        otp = space_match4.group(1) + space_match4.group(2)
+        if otp not in _FAKE_OTPS:
+            return otp
+
+    # Step 3: Standard patterns (8, 6, 5, 4 digits)
     match = re.search(r'\b(\d{8}|\d{6}|\d{5}|\d{4})\b', message)
     if match:
-        return match.group(1)
+        otp = match.group(1)
+        if otp not in _FAKE_OTPS:
+            return otp
+
     return None
+
+
+def extract_otp_from_record(n):
+    """
+    ✅ Smart OTP extraction from API record (S1 + S2).
+    Priority:
+    1. message/raw_sms field — real SMS text (space-separated OTP support)
+    2. otp field — fallback if message field empty
+    3. fake OTP (000000 etc.) ignore করো
+    Works for both S1 and S2 panels.
+    """
+    # Step 1: message/raw_sms field থেকে আগে try করো (real SMS)
+    raw_sms = (
+        n.get("message", "") or
+        n.get("sms", "") or
+        n.get("raw_sms", "") or
+        n.get("text", "") or
+        n.get("body", "") or
+        n.get("content", "") or ""
+    ).strip()
+
+    otp_from_sms = extract_otp(raw_sms) if raw_sms else None
+    if otp_from_sms:
+        return otp_from_sms, raw_sms
+
+    # Step 2: message field এ না পেলে otp field try করো
+    raw_otp_field = (n.get("otp") or "").strip()
+    otp_from_field = extract_otp(raw_otp_field) if raw_otp_field else None
+    if otp_from_field:
+        return otp_from_field, raw_otp_field
+
+    return None, raw_sms or raw_otp_field
+
 
 def detect_app_from_message(message, default_app=""):
     if not message:
@@ -771,15 +846,10 @@ async def check_joined(user_id, bot):
         return True
 
 async def check_all_channels_joined(user_id, bot):
-    """
-    দুইটা channel join করেছে কিনা check করো।
-    Returns: (ch1_joined: bool, ch2_joined: bool)
-    """
     cache_key1 = f"{user_id}_ch1"
     cache_key2 = f"{user_id}_ch2"
     now = time.time()
 
-    # Channel 1
     c1 = _join_cache.get(cache_key1)
     if c1 and (now - c1["time"]) < 300:
         ch1_joined = c1["joined"]
@@ -791,7 +861,6 @@ async def check_all_channels_joined(user_id, bot):
         except:
             ch1_joined = True
 
-    # Channel 2
     c2 = _join_cache.get(cache_key2)
     if c2 and (now - c2["time"]) < 300:
         ch2_joined = c2["joined"]
@@ -806,7 +875,6 @@ async def check_all_channels_joined(user_id, bot):
     return ch1_joined, ch2_joined
 
 def clear_join_cache(user_id):
-    """Verify button চাপলে cache clear করো"""
     _join_cache.pop(f"{user_id}_ch1", None)
     _join_cache.pop(f"{user_id}_ch2", None)
     _join_cache.pop(user_id, None)
@@ -886,11 +954,10 @@ async def get_xmint_console_logs(force=False):
         return _xmint_console_cache["logs"]
 
 # =============================================
-#   CONSOLE DATA HELPERS (Carrier removed)
+#   CONSOLE DATA HELPERS
 # =============================================
 
 async def get_countries_for_app(app_name, panel="S1"):
-    """Console থেকে app এর available countries আনো"""
     logs = await get_xmint_console_logs() if panel == "S2" else await get_console_logs()
     seen = set()
     countries = []
@@ -904,10 +971,6 @@ async def get_countries_for_app(app_name, panel="S1"):
     return countries
 
 async def get_all_ranges_for_country(app_name, country, panel="S1"):
-    """
-    Carrier step removed — country select করলেই সব ranges আসবে
-    S1 + S2 উভয়ের জন্য কাজ করে
-    """
     logs = await get_xmint_console_logs() if panel == "S2" else await get_console_logs()
     seen = set()
     ranges = []
@@ -922,10 +985,6 @@ async def get_all_ranges_for_country(app_name, country, panel="S1"):
     return ranges
 
 async def get_live_traffic_data():
-    """
-    🚦 Live Traffic — S1 + S2 আলাদা
-    Returns: {app_name: {total: N, s1: N, s2: N, countries: {country: count}}}
-    """
     s1_logs = await get_console_logs(force=True)
     s2_logs = await get_xmint_console_logs(force=True)
 
@@ -948,10 +1007,6 @@ async def get_live_traffic_data():
     return result
 
 async def get_all_ranges_by_country_combined(app_name):
-    """
-    S1 + S2 combined ranges by country for channel post
-    Returns: {country: [range1, range2, ...]}
-    """
     s1_logs = await get_console_logs()
     s2_logs = await get_xmint_console_logs()
     all_logs = s1_logs + s2_logs
@@ -968,7 +1023,6 @@ async def get_all_ranges_by_country_combined(app_name):
         if not range_val:
             continue
 
-        # Unknown/PostPaid country group করো
         if not country or country.lower() in ["unknown", ""]:
             country = "OTHER REGIONS"
         elif country.lower() in ["postpaid", "post paid"]:
@@ -988,27 +1042,22 @@ async def get_all_ranges_by_country_combined(app_name):
 # =============================================
 
 def build_live_traffic_message(traffic_data):
-    """🚦 Live Traffic — শুধু Facebook, OTP counter + BD time"""
     from datetime import timezone, timedelta
     bd_now = datetime.now(timezone(timedelta(hours=6))).strftime("%I:%M %p")
 
-    # Counter থেকে data নাও
     counter = _get_otp_counter()
     fb_counter = counter.get("FACEBOOK", {})
     counter_total = fb_counter.get("total", 0)
 
-    # Console থেকে S1/S2 breakdown
     fb_console = traffic_data.get("FACEBOOK", {}) if traffic_data else {}
     s1 = fb_console.get("s1", 0)
     s2 = fb_console.get("s2", 0)
 
-    # Total — counter এর total দেখাবে (বেশি accurate)
     total = counter_total if counter_total > 0 else (fb_console.get("total", 0))
 
     if total == 0:
         return f"🚦 FACEBOOK LIVE TRAFFIC\n\nNo data available.\n\n🕐 Last Update: {bd_now}"
 
-    # Countries — counter থেকে
     countries = fb_counter.get("countries", {})
     if not countries:
         countries = fb_console.get("countries", {})
@@ -1039,7 +1088,6 @@ def build_live_traffic_message(traffic_data):
 # =============================================
 
 def build_range_dashboard(app_name, ranges_by_country, interval_min=20):
-    """Channel এ post করার জন্য range dashboard — S1/S2 আলাদা, BD time"""
     from datetime import timezone, timedelta
     if not ranges_by_country:
         return None
@@ -1048,7 +1096,6 @@ def build_range_dashboard(app_name, ranges_by_country, interval_min=20):
     current_time = bd_now.strftime("%I:%M %p")
     next_time = (bd_now + timedelta(minutes=interval_min)).strftime("%I:%M %p")
 
-    # total ranges count — S1+S2 combined per country
     total_ranges = sum(len(v["S1"]) + len(v["S2"]) for v in ranges_by_country.values())
     total_countries = len([k for k in ranges_by_country if k not in ("OTHER REGIONS",)])
 
@@ -1060,11 +1107,9 @@ def build_range_dashboard(app_name, ranges_by_country, interval_min=20):
     lines.append(f"🟨 TOTAL RANGES: {total_ranges}")
     lines.append(f"🟩 UPDATE INTERVAL: {interval_min} MIN\n")
 
-    # Sort by total ranges per country (S1+S2)
     def country_total(item):
         return len(item[1]["S1"]) + len(item[1]["S2"])
 
-    # Known countries first, PostPaid, OTHER REGIONS last
     known = {k: v for k, v in ranges_by_country.items() if k not in ("OTHER REGIONS", "PostPaid")}
     postpaid = {"PostPaid": ranges_by_country["PostPaid"]} if "PostPaid" in ranges_by_country else {}
     other = {"OTHER REGIONS": ranges_by_country["OTHER REGIONS"]} if "OTHER REGIONS" in ranges_by_country else {}
@@ -1105,20 +1150,13 @@ def build_range_dashboard(app_name, ranges_by_country, interval_min=20):
     return "\n".join(lines)
 
 # =============================================
-#   AUTO RANGE POST TO CHANNEL (Every 20 min)
+#   LIVE SMS POST TO CHANNEL (Every 60 sec)
 # =============================================
 
-# =============================================
-#   LIVE SMS POST TO CHANNEL (Every 30 sec)
-# =============================================
-
-# Already posted entries track করো (duplicate avoid)
 _posted_sms_ids = set()
-
-_job_is_running = False  # Job running flag
+_job_is_running = False
 
 async def job_post_live_sms(context):
-    """Optimized: no timeout loss + retry + safe delay"""
     global _posted_sms_ids, _job_is_running
 
     if _job_is_running:
@@ -1143,8 +1181,6 @@ async def job_post_live_sms(context):
 
                 range_val = log.get("range", "").strip()
                 log_time = log.get("time", "").strip()
-                # Duplicate fix: panel prefix সরিয়ে দিলাম
-                # S1+S2 same range/time হলে একটাই post হবে
                 unique_id = f"{range_val}_{log_time}"
 
                 if unique_id in _posted_sms_ids:
@@ -1154,7 +1190,6 @@ async def job_post_live_sms(context):
 
                 country = log.get("country", "").strip() or "Unknown"
                 flag = get_flag(country)
-                # SMS field — multiple possible names check করো
                 raw_sms = (
                     log.get("message", "") or
                     log.get("sms", "") or
@@ -1164,7 +1199,6 @@ async def job_post_live_sms(context):
                     log.get("content", "") or ""
                 ).strip()
 
-                # Raw SMS এ * count করে fake OTP generate
                 import re as _re
                 star_match = _re.search(r'\*+', raw_sms)
                 otp_len = len(star_match.group()) if star_match else 6
@@ -1198,13 +1232,10 @@ async def job_post_live_sms(context):
 
                 messages_to_send.append((msg, keyboard))
 
-        # Limit to avoid flood
         messages_to_send = messages_to_send[:20]
 
         for msg, keyboard in messages_to_send:
             success = False
-
-            # Try 2 times max
             for attempt in range(2):
                 try:
                     await asyncio.wait_for(
@@ -1218,13 +1249,10 @@ async def job_post_live_sms(context):
                         timeout=30
                     )
                     success = True
-                    logging.info(f"✅ Message posted successfully")
                     await asyncio.sleep(random.uniform(1, 2))
                     break
-
                 except asyncio.TimeoutError:
                     logging.warning(f"⚠️ Timeout (attempt {attempt+1}), retrying...")
-
                 except Exception as e:
                     logging.error(f"Error posting message: {e}")
                     break
@@ -1232,14 +1260,11 @@ async def job_post_live_sms(context):
             if not success:
                 logging.error(f"❌ Failed to post message after 2 attempts")
 
-        # Memory leak avoid
         if len(_posted_sms_ids) > 5000:
             _posted_sms_ids = set(list(_posted_sms_ids)[-2000:])
 
-        logging.info(f"✅ job_post_live_sms completed: {len(messages_to_send)} messages processed")
-
     except asyncio.TimeoutError:
-        logging.error("⚠️ job_post_live_sms timeout — logs fetch failed")
+        logging.error("⚠️ job_post_live_sms timeout")
     except Exception as e:
         logging.error(f"job_post_live_sms error: {e}")
     finally:
@@ -1384,7 +1409,6 @@ async def db_save_user(bot, user_id):
         logging.warning(f"DB save error for {user_id}: {e}")
 
 def _parse_user_record(text, msg_id):
-    """JSON text parse করে user_data তে load করো। Success হলে uid return করো।"""
     try:
         data = _json.loads(text)
         uid = int(data["user_id"])
@@ -1405,10 +1429,6 @@ def _parse_user_record(text, msg_id):
         return None
 
 async def _db_forward_read(bot, msg_id, max_retries=3):
-    """
-    একটা message forward করে text পড়ো।
-    Return: (text, success) — success=False মানে permanently skip করো।
-    """
     for attempt in range(max_retries):
         try:
             fwd = await bot.forward_message(
@@ -1417,7 +1437,6 @@ async def _db_forward_read(bot, msg_id, max_retries=3):
                 message_id=msg_id
             )
             text = fwd.text or fwd.caption or ""
-            # Forward copy delete করো — fire and forget
             asyncio.create_task(_safe_delete(bot, bot.id, fwd.message_id))
             return text, True
         except Exception as e:
@@ -1427,10 +1446,8 @@ async def _db_forward_read(bot, msg_id, max_retries=3):
                 wait = int(nums.group() if nums else 10)
                 logging.warning(f"⚠️ DB flood wait {wait + 2}s (msg {msg_id})")
                 await asyncio.sleep(wait + 2)
-                # Flood wait এর পরে retry করো — attempt count গোনা দরকার নেই
                 continue
             elif any(x in err for x in ["message not found", "invalid", "message_id_invalid", "not found", "forbidden"]):
-                # এই message exists করে না — skip
                 return "", False
             elif attempt < max_retries - 1:
                 await asyncio.sleep(1)
@@ -1445,19 +1462,22 @@ async def _safe_delete(bot, chat_id, message_id):
     except Exception:
         pass
 
+# =============================================
+#   ✅ FIXED: db_load_all_users
+#   - প্রথমবার: full scan (শুরু থেকে শেষ)
+#   - পরেরবার: শুধু নতুন messages (last scanned ID থেকে)
+#   - Rate limit smart handling
+# =============================================
+
+# Memory তে last scanned ID রাখো
+_db_last_scanned_id = DB_LAST_SCANNED_ID  # env থেকে initial value
+
 async def db_load_all_users(bot):
-    """
-    ✅ Optimized version — batch concurrency + smart rate limiting
-    - প্রতি batch তে CONCURRENTLY forward করে → অনেক দ্রুত
-    - Flood wait automatically handle করে
-    - Last 2000 messages scan করে (আগে ছিল 1000)
-    - Duplicate uid হলে latest entry রাখে (msg_id বড় = নতুন)
-    """
-    loaded = 0
-    skipped = 0
-    SCAN_LIMIT = 2000   # কতটা পুরনো message পর্যন্ত দেখবো
-    BATCH_SIZE = 10     # একসাথে কতগুলো forward করবো
-    BATCH_DELAY = 1.2   # প্রতি batch এর পর কত সেকেন্ড wait
+    global _db_last_scanned_id
+
+    BATCH_SIZE = 5       # ছোট batch → rate limit কম
+    BATCH_DELAY = 2.0    # প্রতি batch এর পর 2 সেকেন্ড wait
+    FLOOD_BASE_WAIT = 5  # flood wait এর উপরে extra buffer
 
     try:
         # Marker পাঠিয়ে latest msg_id বের করো
@@ -1465,32 +1485,44 @@ async def db_load_all_users(bot):
         marker_id = marker.message_id
         asyncio.create_task(_safe_delete(bot, DB_CHANNEL_ID, marker_id))
 
-        start_id = max(1, marker_id - SCAN_LIMIT)
+        if _db_last_scanned_id == 0:
+            # ✅ প্রথমবার — full scan (সব messages)
+            start_id = max(1, marker_id - 5000)  # max 5000 পিছনে
+            scan_type = "FULL"
+        else:
+            # ✅ পরেরবার — শুধু নতুন messages
+            start_id = _db_last_scanned_id + 1
+            scan_type = "INCREMENTAL"
+
+        if start_id >= marker_id:
+            logging.warning(f"✅ DB Load: কোনো নতুন message নেই (last={_db_last_scanned_id})")
+            return
+
         all_ids = list(range(start_id, marker_id))
         total = len(all_ids)
-        logging.warning(f"📥 DB Load শুরু — msg range: {start_id}→{marker_id - 1} ({total} slots)")
+        logging.warning(f"📥 DB Load [{scan_type}] — msg range: {start_id}→{marker_id - 1} ({total} slots)")
 
-        # Batch করে process করো
+        loaded = 0
+        skipped = 0
+        highest_scanned = _db_last_scanned_id
+
         for batch_start in range(0, total, BATCH_SIZE):
             batch = all_ids[batch_start: batch_start + BATCH_SIZE]
 
-            # Concurrent forward
-            tasks = [_db_forward_read(bot, mid) for mid in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for msg_id in batch:
+                text, success = await _db_forward_read(bot, msg_id)
 
-            for msg_id, result in zip(batch, results):
-                if isinstance(result, Exception):
-                    skipped += 1
-                    continue
-                text, success = result
+                if msg_id > highest_scanned:
+                    highest_scanned = msg_id
+
                 if not success:
                     skipped += 1
                     continue
+
                 if text and text.strip().startswith("{") and "user_id" in text:
                     uid = _parse_user_record(text, msg_id)
                     if uid is not None:
-                        # যদি same user এর পুরনো entry আগে load হয়ে থাকে,
-                        # নতুন msg_id টা রাখো (latest = more accurate)
+                        # Latest entry রাখো (বড় msg_id = নতুন)
                         existing_mid = user_db_msg_id.get(uid, 0)
                         if msg_id > existing_mid:
                             user_db_msg_id[uid] = msg_id
@@ -1500,14 +1532,25 @@ async def db_load_all_users(bot):
                 else:
                     skipped += 1
 
-            # Progress log প্রতি 100 batch step এ
-            if (batch_start // BATCH_SIZE) % 10 == 0:
-                done = min(batch_start + BATCH_SIZE, total)
-                logging.info(f"📊 DB progress: {done}/{total} | loaded={loaded}")
+                # প্রতিটা message এর পর ছোট delay
+                await asyncio.sleep(0.3)
 
+            # Batch শেষে বড় delay
             await asyncio.sleep(BATCH_DELAY)
 
-        logging.warning(f"✅ DB Load complete — {loaded} users loaded, {skipped} skipped")
+            # Progress log
+            done = min(batch_start + BATCH_SIZE, total)
+            if done % 50 == 0 or done == total:
+                logging.info(f"📊 DB progress: {done}/{total} | loaded={loaded} | skipped={skipped}")
+
+        # ✅ Scan শেষে last scanned ID update করো
+        _db_last_scanned_id = highest_scanned
+        logging.warning(
+            f"✅ DB Load [{scan_type}] complete — {loaded} users loaded, {skipped} skipped\n"
+            f"⚠️  Next restart এ incremental scan হবে from msg_id={_db_last_scanned_id}\n"
+            f"⚠️  env এ সেট করো: DB_LAST_SCANNED_ID={_db_last_scanned_id}"
+        )
+
     except Exception as e:
         logging.error(f"DB Load error: {e}")
 
@@ -1516,7 +1559,6 @@ async def db_load_all_users(bot):
 # =============================================
 
 def main_keyboard(user_id=None):
-    """Reply keyboard — 🚦 Live Traffic button added"""
     buttons = [
         [KeyboardButton("📞 Get Number"), KeyboardButton("📡 Custom Range")],
         [KeyboardButton("⏭️ Bulk Number"), KeyboardButton("🚦 Live Traffic")],
@@ -1534,7 +1576,6 @@ APP_DISPLAY_NAMES = {
 }
 
 async def get_dynamic_apps():
-    """S1 + S2 console থেকে available apps আনো"""
     try:
         s1_logs = await get_console_logs()
         s2_logs = await get_xmint_console_logs()
@@ -1576,7 +1617,6 @@ def server_select_inline(app_name):
     return InlineKeyboardMarkup(buttons)
 
 def country_select_inline(countries, app_name):
-    """Country select — carrier step নেই, directly range এ যাবে"""
     buttons = []
     for c in countries:
         if isinstance(c, dict):
@@ -1595,7 +1635,6 @@ def country_select_inline(countries, app_name):
     return InlineKeyboardMarkup(buttons)
 
 def range_select_inline(ranges, app_name, country):
-    """Carrier step removed — directly ranges দেখাও"""
     buttons = []
     for r in ranges[:20]:
         buttons.append([InlineKeyboardButton(
@@ -1663,6 +1702,10 @@ def cancel_all_otp_tasks(user_id):
         t.cancel()
 
 async def auto_otp_single(number, user_id, stop_event, otp_callback):
+    """
+    ✅ FIXED: S1 + S2 দুটোর জন্যই extract_otp_from_record() ব্যবহার করো
+    - fake OTP (000000) ignore করে message field থেকে real OTP নেয়
+    """
     clean_num = number.replace("+", "").replace(" ", "").strip()
     app = user_data[user_id].get("app", "FACEBOOK")
     panel = user_data[user_id].get("panel", "S1")
@@ -1696,8 +1739,10 @@ async def auto_otp_single(number, user_id, stop_event, otp_callback):
                 api_num = str(n.get("number", "")).replace("+", "").replace(" ", "").strip()
                 if clean_num != api_num:
                     continue
-                raw_otp = (n.get("otp") or n.get("message") or "").strip()
-                otp = extract_otp(raw_otp)
+
+                # ✅ Smart OTP extraction — fake otp field হলে message থেকে নেয়
+                otp, raw_otp = extract_otp_from_record(n)
+
                 if otp and otp not in seen_otps:
                     seen_otps.add(otp)
                     found_country = n.get("country", "").strip()
@@ -1772,7 +1817,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
                 logging.error(f"Channel send error: {e}")
 
         current_num = str(user_data[user_id].get("last_number", "")).replace("+", "").replace(" ", "").strip()
-        # শেষের 7 digit দিয়ে match করো — loose match
         match = (
             current_num in clean_found_num or
             clean_found_num in current_num or
@@ -1819,7 +1863,6 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
         inner_task = asyncio.create_task(auto_otp_single(number, user_id, stop_event, on_otp))
 
         while not stop_event.is_set():
-            # OTP নতুন আসলে timer reset
             if len(otp_lines) > last_otp_count:
                 last_otp_count = len(otp_lines)
                 elapsed = 0
@@ -1925,8 +1968,6 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
                 pass
             user_msg.pop(chat_id, None)
 
-        # /get command এ loading reply off করা হয়েছে
-
         if panel == "S1":
             data, number_session = await api_get_number(range_val, app)
         else:
@@ -1989,8 +2030,7 @@ async def do_otp_check(message, number, user_id=None, bot=None):
 
     found = []
     for n in nums:
-        raw_otp = (n.get("otp") or n.get("message") or "").strip()
-        otp = extract_otp(raw_otp)
+        otp, raw_otp = extract_otp_from_record(n)
         if otp:
             found.append((n, otp, raw_otp))
 
@@ -1999,8 +2039,7 @@ async def do_otp_check(message, number, user_id=None, bot=None):
         nums2 = data2.get("data", {}).get("numbers") or [] if data2.get("meta", {}).get("code") == 200 else []
         for n in nums2:
             if n.get("status") == "success":
-                raw_otp = (n.get("otp") or n.get("message") or "").strip()
-                otp = extract_otp(raw_otp)
+                otp, raw_otp = extract_otp_from_record(n)
                 if otp:
                     found.append((n, otp, raw_otp))
 
@@ -2044,7 +2083,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new_user:
         asyncio.create_task(db_save_user(context.bot, user_id))
 
-    # ✅ শুধু নতুন user এর জন্য join check
     if is_new_user:
         ch1_joined, ch2_joined = await check_all_channels_joined(user_id, context.bot)
         if not ch1_joined or not ch2_joined:
@@ -2066,7 +2104,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # Bug #1 #2 fix — range + country always clear on start
     cancel_all_otp_tasks(user_id)
     user_data[user_id]["range"] = None
     user_data[user_id]["country"] = None
@@ -2087,7 +2124,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # ✅ Welcome message — inline menu নেই, শুধু welcome + keyboard
     welcome_text = (
         "╔══════════════════════╗\n"
         f"   🎉 স্বাগতম, {user.first_name}! 🎉\n"
@@ -2300,7 +2336,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[user_id]["name"] = user_name
     data = query.data
 
-    # ✅ VERIFY JOIN BUTTON
     if data == "verify_join":
         clear_join_cache(user_id)
         ch1_joined, ch2_joined = await check_all_channels_joined(user_id, context.bot)
@@ -2309,7 +2344,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
             except Exception:
                 pass
-            # সব clear করে main menu দেখাও
             cancel_all_otp_tasks(user_id)
             user_data[user_id]["range"] = None
             user_data[user_id]["country"] = None
@@ -2325,7 +2359,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_msg = await context.bot.send_message(chat_id=chat_id, text=START_MENU_TEXT, reply_markup=inline_kb)
             user_msg[chat_id] = new_msg.message_id
         else:
-            # কোন channel join হয়নি সেটা দেখাও
             keyboard_buttons = []
             if not ch1_joined:
                 keyboard_buttons.append([InlineKeyboardButton("🔗 Main Channel", url=CHANNEL_LINK)])
@@ -2339,32 +2372,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-        return
-
-
-        cancel_all_otp_tasks(user_id)
-        user_data[user_id].update({
-            "auto_otp_cancel": True, "otp_active": False, "otp_running": False,
-            "number_session": None, "last_number": None,
-            "country_r": None, "range": None, "country": None,
-        })
-        await asyncio.sleep(0.1)
-        user_data[user_id]["auto_otp_cancel"] = False
-        chat_id = query.message.chat.id
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        for msg_dict in [user_msg, user_range_msg]:
-            if chat_id in msg_dict:
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_dict[chat_id])
-                except Exception:
-                    pass
-                msg_dict.pop(chat_id, None)
-        inline_kb = await app_select_inline_dynamic()
-        new_msg = await context.bot.send_message(chat_id=chat_id, text=START_MENU_TEXT, reply_markup=inline_kb)
-        user_msg[chat_id] = new_msg.message_id
         return
 
     if data == "stop_auto":
@@ -2444,7 +2451,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, START_MENU_TEXT, reply_markup=inline_kb)
 
     elif data.startswith("country_"):
-        # Carrier step removed — directly ranges load করো
         raw = data.replace("country_", "")
         if raw.startswith("S1_") or raw.startswith("S2_"):
             panel = raw[:2]
@@ -2458,7 +2464,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["range"] = None
         await safe_edit(query, "⏳ Range লোড হচ্ছে...")
 
-        # get_all_ranges_for_country — carrier step নেই
         ranges = await get_all_ranges_for_country(app_name, country, panel=panel)
 
         if not ranges:
@@ -2505,7 +2510,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         chat_id = query.message.chat.id
 
-        # পুরনো message delete করো
         if chat_id in user_msg:
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=user_msg[chat_id])
@@ -2517,7 +2521,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # নতুন loading message পাঠাও
         loading_msg = await context.bot.send_message(chat_id=chat_id, text="⏳ Getting Number...")
         user_msg[chat_id] = loading_msg.message_id
 
@@ -2577,7 +2580,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         chat_id = query.message.chat.id
 
-        # user_msg আর query.message একসাথে handle — double delete avoid
         msg_id = user_msg.get(chat_id)
         query_msg_id = query.message.message_id
         if msg_id and msg_id != query_msg_id:
@@ -2629,13 +2631,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         country = user_data[user_id].get("country", "")
         panel = user_data[user_id].get("panel", "S1")
 
-        # Bug 1 fix — OTP task cancel + state reset
         cancel_all_otp_tasks(user_id)
         user_data[user_id]["otp_active"] = False
         user_data[user_id]["otp_running"] = False
-        user_data[user_id]["range"] = None  # Bug 3 fix — range reset
+        user_data[user_id]["range"] = None
 
-        # Bug 2 fix — country নেই তো country select এ পাঠাও, app select এ না
         if not country:
             await safe_edit(query, "⏳ Loading...")
             countries = await get_countries_for_app(app_name, panel=panel)
@@ -2693,7 +2693,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================
 
 async def auto_menu_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reply keyboard সবসময় visible রাখো"""
     if not update.message or not update.message.text:
         return
     user_id = update.effective_user.id
@@ -2722,7 +2721,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     waiting = user_data[user_id].get("waiting_for")
 
-    # ✅ Button press হলে waiting_for reset করো
     BUTTON_TEXTS = {
         "📞 Get Number", "📡 Custom Range",
         "⏭️ Bulk Number", "🚦 Live Traffic", "🛟 Support Admin"
@@ -2731,7 +2729,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["waiting_for"] = None
         waiting = None
 
-    # Custom range input
     if waiting == "custom_range":
         range_text = text.strip().upper()
         clean = ''.join(c for c in range_text if c.isdigit() or c == 'X')
@@ -2766,7 +2763,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await do_get_number(update.message, user_id, count=1, user_name=user_name, bot=context.bot)
         return
 
-    # Broadcast
     if user_id == ADMIN_ID and waiting == "broadcast":
         user_data[user_id]["waiting_for"] = None
         sent = 0
@@ -2790,7 +2786,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "📞 Get Number":
-        # Bug #1 #2 fix — range + country clear
         cancel_all_otp_tasks(user_id)
         user_data[user_id]["range"] = None
         user_data[user_id]["country"] = None
@@ -2836,7 +2831,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await do_get_number(update.message, user_id, count=100, user_name=user_name, bot=context.bot)
         return
 
-    # 🚦 Live Traffic button
     if text == "🚦 Live Traffic":
         await update.message.reply_text("⏳ Live Traffic লোড হচ্ছে...", reply_markup=main_keyboard(user_id))
         try:
@@ -2864,12 +2858,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Admin access নেই।")
         return
 
-    # Unknown text — keyboard সবসময় দেখাও, delete করো না
     try:
         await update.message.delete()
     except Exception:
         pass
-    # kb_msg না থাকলে নতুন করে পাঠাও
     if chat_id not in user_kb_msg:
         try:
             kb_msg = await context.bot.send_message(
@@ -2886,11 +2878,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================
 
 async def db_index_existing_users(bot):
-    """
-    DB_INDEX_MSG_ID=0  → পুরনো hardcoded user DB channel এ index করো।
-    DB_INDEX_MSG_ID>0  → আগে হয়ে গেছে, skip।
-    Index শেষে log এ message ID দেখাবে — env এ সেট করলে পরের restart এ skip।
-    """
     if DB_INDEX_MSG_ID != 0:
         logging.warning(f"✅ DB Index: skip (DB_INDEX_MSG_ID={DB_INDEX_MSG_ID})")
         return
@@ -2945,7 +2932,6 @@ async def post_init(application):
     except Exception as e:
         logging.error(f"DB load error: {e}")
 
-    # ✅ পুরনো hardcoded user যারা DB তে নেই তাদের index করো
     try:
         await db_index_existing_users(application.bot)
     except Exception as e:
