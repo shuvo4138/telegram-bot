@@ -208,10 +208,10 @@ class SessionPool:
             if self.initialized:
                 return
             results = []
-            for i in range(SESSION_POOL_SIZE):
+            for i in range(50):
                 r = await self._login_once()
                 results.append(r)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
             number_count = 0
             otp_count = 0
             for r in results:
@@ -327,19 +327,19 @@ class XMintSessionPool:
             if self.initialized:
                 return
             results = []
-            for i in range(40):
+            for i in range(20):
                 r = await self._login_once()
                 results.append(r)
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
             number_count = 0
             otp_count = 0
             for r in results:
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
-                    if number_count < 25:
+                    if number_count < 12:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 15:
+                    elif otp_count < 8:
                         await self.otp_sessions.put(r)
                         otp_count += 1
             self.initialized = True
