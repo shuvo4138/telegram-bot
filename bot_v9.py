@@ -327,7 +327,7 @@ class XMintSessionPool:
             if self.initialized:
                 return
             results = []
-            for i in range(35):
+            for i in range(32):
                 r = await self._login_once()
                 results.append(r)
                 await asyncio.sleep(1)
@@ -339,7 +339,7 @@ class XMintSessionPool:
                     if number_count < 20:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 15:
+                    elif otp_count < 12:
                         await self.otp_sessions.put(r)
                         otp_count += 1
             self.initialized = True
