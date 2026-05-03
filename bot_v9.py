@@ -1396,9 +1396,14 @@ async def api_get_number(range_val, app_name="FACEBOOK", _retry=0):
         await session_pool.return_number_session(session)
         return {"error": str(e)}, None
 
-async def api_get_info(search="", status="", saved_session=None):
+async def api_get_info(search="", status="", saved_session=None, _retry=0):
+    # Session না থাকলে বা expire হলে pool থেকে নতুন নাও
     if not saved_session or not saved_session.get("token"):
-        return {"error": "No session"}
+        saved_session = await session_pool.get_otp_session()
+        if not saved_session or not saved_session.get("token"):
+            saved_session = await session_pool._login_once()
+        if not saved_session or not saved_session.get("token"):
+            return {"error": "No session"}
     session = saved_session
     try:
         token = session.get("token")
@@ -1413,6 +1418,12 @@ async def api_get_info(search="", status="", saved_session=None):
                 headers=get_headers(token, sess)
             )
         if res.status_code == 403:
+            # Session expire — নতুন login করে retry
+            if _retry < 2:
+                new_session = await session_pool._login_once()
+                if new_session.get("token"):
+                    await asyncio.sleep(1)
+                    return await api_get_info(search=search, status=status, saved_session=new_session, _retry=_retry+1)
             return {"error": "session_expired"}
         if res.status_code != 200:
             return {"error": f"HTTP {res.status_code}"}
