@@ -1251,7 +1251,14 @@ async def job_post_live_sms(context):
 
         for panel_label, logs in [("S1", s1_logs), ("S2", s2_logs)]:
             for log in logs:
-                app = log.get("app_name", "").replace("*", "").strip().upper()
+                app = (
+                    log.get("app_name") or
+                    log.get("appName") or
+                    log.get("app") or
+                    log.get("serviceName") or
+                    log.get("service") or
+                    log.get("name") or ""
+                ).replace("*", "").strip().upper()
                 if app != "FACEBOOK":
                     continue
 
@@ -1316,7 +1323,7 @@ async def job_post_live_sms(context):
                 messages_to_send.append((msg, keyboard))
 
         # Limit to avoid flood
-        messages_to_send = messages_to_send[:3]  # Max 3টা per 60 sec
+        messages_to_send = messages_to_send[:7]  # Max 7টা per 60 sec
 
         if messages_to_send:
             for msg_text, msg_keyboard in messages_to_send:
