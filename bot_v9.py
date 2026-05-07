@@ -693,10 +693,10 @@ class S2SessionPool:
                 r = await self._login_once()
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
-                    if number_count < 20:
+                    if number_count < 22:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 10:
+                    elif otp_count < 11:
                         await self.otp_sessions.put(r)
                         otp_count += 1
                 await asyncio.sleep(1)
