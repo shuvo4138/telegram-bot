@@ -26,8 +26,10 @@ logging.basicConfig(
 )
 # Suppress httpx and telegram verbose logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("hpack").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════
@@ -1395,9 +1397,9 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
                         parse_mode="Markdown",
                         reply_markup=after_number_inline_s1s2(number, range_val)
                     )
-                    return
                 except Exception:
                     pass
+                return
             sent_message = await message.reply_text(
                 new_text,
                 parse_mode="Markdown",
