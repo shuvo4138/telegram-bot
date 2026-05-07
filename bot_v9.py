@@ -689,7 +689,9 @@ class S2SessionPool:
             if self.initialized:
                 return
             number_count = otp_count = 0
-            for i in range(32):
+            for i in range(50):
+                if number_count >= 22 and otp_count >= 11:
+                    break
                 r = await self._login_once()
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
