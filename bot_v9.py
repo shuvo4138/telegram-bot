@@ -696,7 +696,7 @@ class S2SessionPool:
                     if number_count < 20:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 12:
+                    elif otp_count < 10:
                         await self.otp_sessions.put(r)
                         otp_count += 1
                 await asyncio.sleep(1)
@@ -1314,15 +1314,14 @@ def after_number_inline_s1s2(number, range_val):
         [InlineKeyboardButton("🔄 New Number", callback_data=f"new_number_{range_val}")],
         [InlineKeyboardButton("🌍 Change Region", callback_data="back_app")],
     ]
-    _ch_link = OTP_CHANNEL_LINK or MAIN_CHANNEL_LINK or JOIN_CHANNEL_LINK or ""
-    if _ch_link and len(_ch_link) > 10:
-        buttons.insert(1, [InlineKeyboardButton("📢 Check OTP (Channel)", url=_ch_link)])
+    _ch_link = "https://t.me/+SWraCXOQrWM4Mzg9"
+    buttons.insert(1, [InlineKeyboardButton("📢 Check OTP (Channel)", url=_ch_link)])
     return InlineKeyboardMarkup(buttons)
 
 def after_number_inline_s3(pool_key):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Change Numbers", callback_data=f"s3change:{pool_key}")],
-        [InlineKeyboardButton("👁 View OTP", url=OTP_CHANNEL_LINK)],
+        [InlineKeyboardButton("👁 View OTP", url="https://t.me/+SWraCXOQrWM4Mzg9")],
         [InlineKeyboardButton("🌍 Change Country", callback_data="s3changecountry")],
     ])
 
@@ -1971,41 +1970,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text in ("📲 Get Number",):
-        panel = user_data[user_id].get("panel", "S1")
-        if panel == "S3":
-            # S3 — show country pool
-            pool = get_numbers_pool()
-            if not pool:
-                await update.message.reply_text("❌ No numbers available in S3!")
+        inline_kb = await panel_select_inline()
+        if chat_id in user_msg:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=user_msg[chat_id],
+                    reply_markup=inline_kb
+                )
                 return
-            buttons = [
-                [InlineKeyboardButton(get_button_label(pk), callback_data=f"s3getcountry:{pk}")]
-                for pk in sorted(pool.keys())
-            ]
-            await update.message.reply_text(
-                "🌍 *Select Country (S3):*",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-        else:
-            # S1/S2 — show panel select
-            inline_kb = await panel_select_inline()
-            if chat_id in user_msg:
-                try:
-                    await context.bot.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=user_msg[chat_id],
-                        reply_markup=inline_kb
-                    )
-                    return
-                except Exception:
-                    pass
-            new_msg = await context.bot.send_message(
-                chat_id=chat_id,
-                text=START_MENU_TEXT,
-                reply_markup=inline_kb
-            )
-            user_msg[chat_id] = new_msg.message_id
+            except Exception:
+                pass
+        new_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=START_MENU_TEXT,
+            reply_markup=inline_kb
+        )
+        user_msg[chat_id] = new_msg.message_id
         return
 
     if text in ("📡 Custom Range",):
