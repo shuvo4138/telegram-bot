@@ -689,16 +689,16 @@ class S2SessionPool:
             if self.initialized:
                 return
             number_count = otp_count = 0
-            for i in range(50):
-                if number_count >= 22 and otp_count >= 11:
+            for i in range(35):
+                if number_count >= 15 and otp_count >= 10:
                     break
                 r = await self._login_once()
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
-                    if number_count < 22:
+                    if number_count < 15:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 11:
+                    elif otp_count < 10:
                         await self.otp_sessions.put(r)
                         otp_count += 1
                 await asyncio.sleep(1)
@@ -1458,42 +1458,48 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
 
     async def _run():
         OTP_TIMEOUT = 10 * 60
+        OTP_MAX = 5  # Maximum 5 OTP per number
         elapsed = 0
-        last_otp_count = 0
-
-        inner_task = asyncio.create_task(auto_otp_single_s1(number, user_id, stop_event))
 
         while not stop_event.is_set():
             if user_data.get(user_id, {}).get("auto_otp_cancel"):
                 stop_event.set()
                 break
 
-            if len(otp_lines) > last_otp_count:
-                last_otp_count = len(otp_lines)
+            # Stop if already got 5 OTPs
+            if len(otp_lines) >= OTP_MAX:
+                stop_event.set()
+                break
+
+            # Fetch OTP result from API
+            result_otp, result_country, result_flag, result_app, result_raw = await auto_otp_single_s1(
+                number, user_id, stop_event
+            )
+
+            if stop_event.is_set():
+                break
+
+            if result_otp:
                 elapsed = 0
+                country_r_now = result_country or user_data[user_id].get("country_r", country_r)
+                flag_now = result_flag or get_flag_by_iso(country_r_now)
+                await on_otp(result_otp, country_r_now, flag_now, result_app or app, result_raw or "")
 
-                otp = otp_lines[-1]
-                # Get country/flag from last OTP
-                country_r_now = user_data[user_id].get("country_r", country_r)
-                flag_now = get_flag_by_iso(country_r_now)
-                await on_otp(otp, country_r_now, flag_now, app, "")
-                inner_task.cancel()
-                await asyncio.gather(inner_task, return_exceptions=True)
-                inner_task = asyncio.create_task(auto_otp_single_s1(number, user_id, stop_event))
-
-            if not otp_lines:
-                await update_msg(f"\n{random.choice(LOADING_TEXTS)}")
-
-            await asyncio.sleep(5)
-            elapsed += 5
+                # Stop after 5 OTPs
+                if len(otp_lines) >= OTP_MAX:
+                    stop_event.set()
+                    break
+            else:
+                if not otp_lines:
+                    await update_msg(f"\n{random.choice(LOADING_TEXTS)}")
+                await asyncio.sleep(5)
+                elapsed += 5
 
             if elapsed >= OTP_TIMEOUT:
                 stop_event.set()
                 break
 
         stop_event.set()
-        inner_task.cancel()
-        await asyncio.gather(inner_task, return_exceptions=True)
 
         saved_session = user_data[user_id].get("number_session")
         if saved_session and saved_session.get("token"):
