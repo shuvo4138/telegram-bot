@@ -21,9 +21,13 @@ from telegram.ext import (
 load_dotenv()
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(levelname)s - %(message)s',
     level=logging.INFO
 )
+# Suppress httpx and telegram verbose logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════
@@ -45,6 +49,8 @@ RANGE_CHANNEL_ID = int(os.getenv("RANGE_CHANNEL_ID", os.getenv("OTP_CHANNEL_ID",
 
 # S3 Storage channel (numbers only)
 STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "0").strip())
+
+
 
 # Channel buttons
 MAIN_CHANNEL_LINK = os.getenv("OTP_CHANNEL_LINK", "").strip()
@@ -328,7 +334,6 @@ s3_user_sessions = {}
 s3_users_db = {}
 otp_cache = {}
 STORAGE_MSG_IDS = {}
-USERS_MSG_IDS = {}
 
 async def _save_numbers(bot):
     global STORAGE_MSG_IDS
@@ -361,77 +366,65 @@ async def _save_index(bot):
     except Exception as e:
         logger.error(f"_save_index error: {e}")
 
-async def _save_users_s3(bot):
-    global USERS_MSG_IDS
+async def _save_users_s3(bot=None):
+    """Save s3_users_db to Supabase s3_users table."""
     try:
-        payload = {"users": s3_users_db, "sessions": s3_user_sessions}
-        text = "USERS_DB_V2\n" + json.dumps(payload, ensure_ascii=False)
-        mid = USERS_MSG_IDS.get("users_msg_id")
-        if mid:
-            try:
-                await bot.edit_message_text(chat_id=USERS_CHANNEL_ID, message_id=mid, text=text[:4096])
-                await _save_users_index(bot)
-                return
-            except Exception:
-                pass
-        msg = await bot.send_message(chat_id=USERS_CHANNEL_ID, text=text[:4096])
-        USERS_MSG_IDS["users_msg_id"] = msg.message_id
-        await _save_users_index(bot)
+        if not s3_users_db:
+            return
+        rows = [
+            {"user_id": uid, "username": val.get("username", uid), "joined": val.get("joined", "")}
+            for uid, val in s3_users_db.items()
+        ]
+        async with httpx.AsyncClient(timeout=15) as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/s3_users",
+                headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates"},
+                json=rows
+            )
     except Exception as e:
         logger.error(f"_save_users_s3 error: {e}")
 
-async def _save_users_index(bot):
-    try:
-        text = "USERS_INDEX_V2\n" + json.dumps(USERS_MSG_IDS, ensure_ascii=False)
-        chat = await bot.get_chat(USERS_CHANNEL_ID)
-        pinned = chat.pinned_message
-        if pinned and pinned.text and pinned.text.startswith("USERS_INDEX_V2"):
-            await bot.edit_message_text(chat_id=USERS_CHANNEL_ID, message_id=pinned.message_id, text=text)
-        else:
-            msg = await bot.send_message(chat_id=USERS_CHANNEL_ID, text=text)
-            await bot.pin_chat_message(chat_id=USERS_CHANNEL_ID, message_id=msg.message_id, disable_notification=True)
-    except Exception as e:
-        logger.error(f"_save_users_index error: {e}")
-
 async def tg_load_all(bot):
-    global numbers_pool, s3_users_db, STORAGE_MSG_IDS, USERS_MSG_IDS
-    # Load numbers
+    global numbers_pool, s3_users_db, STORAGE_MSG_IDS
+    # Load numbers from Telegram storage channel
     try:
         chat = await bot.get_chat(STORAGE_CHANNEL_ID)
         pinned = chat.pinned_message
         if pinned and pinned.text and pinned.text.startswith("BOT_INDEX_V2"):
-            STORAGE_MSG_IDS = json.loads(pinned.text[len("BOT_INDEX_V2\n"):])
+            STORAGE_MSG_IDS = json.loads(pinned.text[len("BOT_INDEX_V2
+"):])
             numbers_mid = STORAGE_MSG_IDS.get("numbers_msg_id")
             if numbers_mid:
                 fwd = await bot.forward_message(chat_id=STORAGE_CHANNEL_ID, from_chat_id=STORAGE_CHANNEL_ID, message_id=numbers_mid)
                 text = fwd.text or ""
                 await fwd.delete()
-                if text.startswith("NUMBERS_POOL_V2\n"):
-                    numbers_pool = json.loads(text[len("NUMBERS_POOL_V2\n"):])
+                if text.startswith("NUMBERS_POOL_V2
+"):
+                    numbers_pool = json.loads(text[len("NUMBERS_POOL_V2
+"):])
                     logger.info(f"✅ S3 Numbers loaded: {len(numbers_pool)} pools")
     except Exception as e:
         logger.error(f"Load numbers error: {e}")
 
-    # Load users
+    # Load s3_users from Supabase
     try:
-        chat = await bot.get_chat(USERS_CHANNEL_ID)
-        pinned = chat.pinned_message
-        if pinned and pinned.text and pinned.text.startswith("USERS_INDEX_V2"):
-            USERS_MSG_IDS = json.loads(pinned.text[len("USERS_INDEX_V2\n"):])
-            users_mid = USERS_MSG_IDS.get("users_msg_id")
-            if users_mid:
-                fwd = await bot.forward_message(chat_id=USERS_CHANNEL_ID, from_chat_id=USERS_CHANNEL_ID, message_id=users_mid)
-                text = fwd.text or ""
-                await fwd.delete()
-                if text.startswith("USERS_DB_V2\n"):
-                    payload = json.loads(text[len("USERS_DB_V2\n"):])
-                    if isinstance(payload, dict) and "users" in payload:
-                        s3_users_db.update(payload["users"])
-                        s3_user_sessions.update(payload.get("sessions", {}))
-                        logger.info(f"✅ S3 Users loaded: {len(s3_users_db)}")
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/s3_users",
+                params={"select": "*"},
+                headers=_sb_headers()
+            )
+        rows = res.json()
+        if isinstance(rows, list):
+            for row in rows:
+                uid = str(row["user_id"])
+                s3_users_db[uid] = {
+                    "username": row.get("username", uid),
+                    "joined": row.get("joined", "")
+                }
+            logger.info(f"✅ S3 Users loaded: {len(s3_users_db)}")
     except Exception as e:
         logger.error(f"Load users error: {e}")
-
 # S3 pool helpers
 def get_numbers_pool():
     return numbers_pool
@@ -1768,10 +1761,12 @@ async def job_post_live_sms(context):
                     )
                     text += f"\n{quoted_lines}"
 
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📢 Main Channel", url=OTP_CHANNEL_LINK),
-                    InlineKeyboardButton("🤖 Number Bot", url=f"https://t.me/{BOT_USERNAME}"),
-                ]])
+                _kb_buttons = []
+                if OTP_CHANNEL_LINK and len(OTP_CHANNEL_LINK) > 10:
+                    _kb_buttons.append(InlineKeyboardButton("📢 Main Channel", url=OTP_CHANNEL_LINK))
+                if BOT_USERNAME:
+                    _kb_buttons.append(InlineKeyboardButton("🤖 Number Bot", url=f"https://t.me/{BOT_USERNAME}"))
+                keyboard = InlineKeyboardMarkup([_kb_buttons]) if _kb_buttons else None
                 try:
                     await safe_send_message(
                         bot,
