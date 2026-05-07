@@ -709,12 +709,15 @@ class S2SessionPool:
                     json={"email": XMINT_EMAIL, "password": XMINT_PASSWORD}
                 )
             if res.status_code != 200:
+                logger.error(f"S2 Login failed: HTTP {res.status_code} - {res.text[:200]}")
                 return {}
             data = res.json()
             if data.get("meta", {}).get("code") == 200:
                 token = data["data"].get("token")
                 if token:
                     return {"token": token, "session": "", "time": time.time()}
+            else:
+                logger.error(f"S2 Login bad response: {data}")
         except Exception as e:
             logger.error(f"S2 Login error: {e}")
         return {}
@@ -1305,11 +1308,14 @@ def range_select_inline(ranges, app_name, country):
     return InlineKeyboardMarkup(buttons)
 
 def after_number_inline_s1s2(number, range_val):
-    return InlineKeyboardMarkup([
+    buttons = [
         [InlineKeyboardButton("🔄 New Number", callback_data=f"new_number_{range_val}")],
-        [InlineKeyboardButton("📢 Check OTP (Channel)", url=OTP_CHANNEL_LINK)],
         [InlineKeyboardButton("🌍 Change Region", callback_data="back_app")],
-    ])
+    ]
+    _ch_link = OTP_CHANNEL_LINK or MAIN_CHANNEL_LINK or JOIN_CHANNEL_LINK or ""
+    if _ch_link and len(_ch_link) > 10:
+        buttons.insert(1, [InlineKeyboardButton("📢 Check OTP (Channel)", url=_ch_link)])
+    return InlineKeyboardMarkup(buttons)
 
 def after_number_inline_s3(pool_key):
     return InlineKeyboardMarkup([
@@ -1759,8 +1765,9 @@ async def job_post_live_sms(context):
                     text += f"\n{quoted_lines}"
 
                 _kb_buttons = []
-                if OTP_CHANNEL_LINK and len(OTP_CHANNEL_LINK) > 10:
-                    _kb_buttons.append(InlineKeyboardButton("📢 Main Channel", url=OTP_CHANNEL_LINK))
+                _main_ch_link = OTP_CHANNEL_LINK or MAIN_CHANNEL_LINK or JOIN_CHANNEL_LINK or ""
+                if _main_ch_link and len(_main_ch_link) > 10:
+                    _kb_buttons.append(InlineKeyboardButton("📢 Main Channel", url=_main_ch_link))
                 if BOT_USERNAME:
                     _kb_buttons.append(InlineKeyboardButton("🤖 Number Bot", url=f"https://t.me/{BOT_USERNAME}"))
                 keyboard = InlineKeyboardMarkup([_kb_buttons]) if _kb_buttons else None
