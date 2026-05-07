@@ -1060,7 +1060,14 @@ def fetch_cr_api_otps():
         response = requests.get(CR_API_URL, params=params, timeout=15)
         if response.status_code != 200:
             return []
-        data = response.json()
+        raw = response.text.strip()
+        if not raw:
+            return []
+        try:
+            data = response.json()
+        except Exception:
+            logger.warning(f"CR API invalid JSON: {repr(raw[:100])}")
+            return []
         if data.get("status") != "success":
             return []
         result = []
