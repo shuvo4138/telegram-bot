@@ -391,17 +391,14 @@ async def tg_load_all(bot):
         chat = await bot.get_chat(STORAGE_CHANNEL_ID)
         pinned = chat.pinned_message
         if pinned and pinned.text and pinned.text.startswith("BOT_INDEX_V2"):
-            STORAGE_MSG_IDS = json.loads(pinned.text[len("BOT_INDEX_V2
-"):])
+            STORAGE_MSG_IDS = json.loads(pinned.text[len("BOT_INDEX_V2\n"):])
             numbers_mid = STORAGE_MSG_IDS.get("numbers_msg_id")
             if numbers_mid:
                 fwd = await bot.forward_message(chat_id=STORAGE_CHANNEL_ID, from_chat_id=STORAGE_CHANNEL_ID, message_id=numbers_mid)
                 text = fwd.text or ""
                 await fwd.delete()
-                if text.startswith("NUMBERS_POOL_V2
-"):
-                    numbers_pool = json.loads(text[len("NUMBERS_POOL_V2
-"):])
+                if text.startswith("NUMBERS_POOL_V2\n"):
+                    numbers_pool = json.loads(text[len("NUMBERS_POOL_V2\n"):])
                     logger.info(f"✅ S3 Numbers loaded: {len(numbers_pool)} pools")
     except Exception as e:
         logger.error(f"Load numbers error: {e}")
