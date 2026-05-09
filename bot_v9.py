@@ -1132,16 +1132,17 @@ async def get_all_ranges_for_country(app_name, country, panel="S1"):
 #              S3 — CR API
 # ══════════════════════════════════════════════════════════
 
-def fetch_cr_api_otps():
+async def fetch_cr_api_otps():
     try:
         if not CR_API_URL or not CR_API_TOKEN:
             logger.warning("CR API URL or TOKEN not set!")
             return []
         now = datetime.now()
         dt2 = now.strftime("%Y-%m-%d %H:%M:%S")
-        dt1 = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        dt1 = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
         params = {"token": CR_API_TOKEN, "dt1": dt1, "dt2": dt2, "records": 200}
-        response = requests.get(CR_API_URL, params=params, timeout=15)
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(CR_API_URL, params=params)
         logger.info(f"CR API status: {response.status_code}")
         if response.status_code != 200:
             logger.warning(f"CR API error: {response.text[:200]}")
@@ -1743,7 +1744,8 @@ async def poll_otps_s3(context):
             _s3_kb_buttons.append(InlineKeyboardButton("🤖 Number Bot", url=f"https://t.me/{BOT_USERNAME}"))
         otp_channel_keyboard = InlineKeyboardMarkup([_s3_kb_buttons]) if _s3_kb_buttons else None
 
-        for otp_data in fetch_cr_api_otps():
+        cr_otps = await fetch_cr_api_otps()
+        for otp_data in cr_otps:
             try:
                 number = otp_data.get("num", "").strip()
                 message = otp_data.get("message", "").strip()
@@ -1759,6 +1761,15 @@ async def poll_otps_s3(context):
                     continue
 
                 otp_cache[cache_key] = True
+
+                # BOT_START_TIME এর আগের OTP skip করো (cache clear হলেও পুরানো OTP আসবে না)
+                try:
+                    otp_dt = datetime.strptime(dt[:19], "%Y-%m-%d %H:%M:%S")
+                    if otp_dt < BOT_START_TIME:
+                        otp_cache[cache_key] = True  # cache এ রাখো যাতে পরেও skip হয়
+                        continue
+                except Exception:
+                    pass
 
                 otp_code = extract_otp(message)
                 country = extract_country_code_from_number(number)
@@ -2434,7 +2445,7 @@ async def cmd_apistatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s2_sess = await s2_pool._login_once()
     s2_ok = "✅" if s2_sess.get("token") else "❌"
     # CR API check
-    cr_otps = fetch_cr_api_otps()
+    cr_otps = await fetch_cr_api_otps()
     cr_ok = "✅" if cr_otps is not None else "❌"
     await update.message.reply_text(
         f"━━━━━━━━━━━━━━━━━━\n🔗 API STATUS\n━━━━━━━━━━━━━━━━━━\n\n"
@@ -2950,7 +2961,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s1_ok = "✅" if s1_sess.get("token") else "❌"
             s2_sess = await s2_pool._login_once()
             s2_ok = "✅" if s2_sess.get("token") else "❌"
-            cr_otps = fetch_cr_api_otps()
+            cr_otps = await fetch_cr_api_otps()
             cr_ok = "✅" if cr_otps is not None else "❌"
             await safe_edit(query,
                 f"🔗 *API STATUS*\n\n"
@@ -3187,16 +3198,17 @@ async def post_init(app):
 
     # Preload OTP cache
     try:
-        otps = fetch_cr_api_otps()
+        otps = await fetch_cr_api_otps()
         preloaded = 0
         for otp_data in otps:
             number = otp_data.get("num", "").strip()
             message = otp_data.get("message", "").strip()
             dt = otp_data.get("dt", "").strip()
-            otp_code = extract_otp(message)
-            if number and otp_code and dt:
-                otp_cache[f"s3:{number}:{otp_code}:{dt}"] = True
-                preloaded += 1
+            import hashlib
+            msg_hash = hashlib.md5(message.encode()).hexdigest()[:8]
+            cache_key = f"s3:{number}:{dt}:{msg_hash}"
+            otp_cache[cache_key] = True
+            preloaded += 1
         logger.info(f"✅ Preloaded {preloaded} OTPs into cache")
     except Exception as e:
         logger.error(f"OTP preload error: {e}")
