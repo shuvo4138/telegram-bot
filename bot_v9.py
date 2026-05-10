@@ -44,6 +44,12 @@ OTP_CHANNEL_ID = int(os.getenv("OTP_CHANNEL_ID", "0").strip())
 OTP_CHANNEL_LINK = os.getenv("OTP_CHANNEL_LINK", "").strip()
 JOIN_CHANNEL_USERNAME = "alwaysrvice24hours"
 JOIN_CHANNEL_LINK = "https://t.me/alwaysrvice24hours"
+OTP_CHANNEL_JOIN_LINK = "https://t.me/+SWraCXOQrWM4Mzg9"
+BACKUP_CHANNEL_LINK = "https://t.me/+dutZzSJv-FxhYTdl"
+# Channel IDs for join verification
+MAIN_CHANNEL_CHECK_ID = -1001792312528
+OTP_CHANNEL_CHECK_ID = -1002625886518
+BACKUP_CHANNEL_CHECK_ID = -1003803282073
 CHANNEL2_USERNAME = os.getenv("CHANNEL2_USERNAME", "").strip()
 CHANNEL2_LINK = os.getenv("CHANNEL2_LINK", "").strip()
 CHANNEL2_NAME = os.getenv("CHANNEL2_NAME", "Backup Channel").strip()
@@ -1312,36 +1318,30 @@ _join_cache = {}
 
 async def check_all_channels_joined(user_id, bot):
     now = time.time()
-    cache_key1 = f"{user_id}_ch1"
-    cache_key2 = f"{user_id}_ch2"
+    joined_statuses = ["member", "administrator", "creator"]
+    all_joined = True
 
-    c1 = _join_cache.get(cache_key1)
-    if c1 and (now - c1["time"]) < 300:
-        ch1_joined = c1["joined"]
-    else:
-        try:
-            m = await bot.get_chat_member(JOIN_CHANNEL_USERNAME, user_id)
-            ch1_joined = m.status in ["member", "administrator", "creator"]
-            _join_cache[cache_key1] = {"joined": ch1_joined, "time": now}
-        except:
-            ch1_joined = True
+    for idx, ch_id in enumerate([MAIN_CHANNEL_CHECK_ID, OTP_CHANNEL_CHECK_ID, BACKUP_CHANNEL_CHECK_ID]):
+        cache_key = f"{user_id}_ch{idx}"
+        cached = _join_cache.get(cache_key)
+        if cached and (now - cached["time"]) < 300:
+            ch_joined = cached["joined"]
+        else:
+            try:
+                m = await bot.get_chat_member(ch_id, user_id)
+                ch_joined = m.status in joined_statuses
+                _join_cache[cache_key] = {"joined": ch_joined, "time": now}
+            except Exception:
+                ch_joined = True  # error হলে block করব না
+        if not ch_joined:
+            all_joined = False
 
-    c2 = _join_cache.get(cache_key2)
-    if c2 and (now - c2["time"]) < 300:
-        ch2_joined = c2["joined"]
-    else:
-        try:
-            m = await bot.get_chat_member(CHANNEL2_USERNAME, user_id)
-            ch2_joined = m.status in ["member", "administrator", "creator"]
-            _join_cache[cache_key2] = {"joined": ch2_joined, "time": now}
-        except:
-            ch2_joined = True
-
-    return ch1_joined, ch2_joined
+    # backward compat: return (ch1, ch2) — all_joined হলে (True, True) নইলে (False, False)
+    return (all_joined, all_joined)
 
 def clear_join_cache(user_id):
-    _join_cache.pop(f"{user_id}_ch1", None)
-    _join_cache.pop(f"{user_id}_ch2", None)
+    for idx in range(3):
+        _join_cache.pop(f"{user_id}_ch{idx}", None)
 
 # ══════════════════════════════════════════════════════════
 #              KEYBOARDS
@@ -1528,8 +1528,7 @@ async def auto_otp_multi(message, numbers, user_id, range_val, bot=None):
                 parse_mode="Markdown",
                 reply_markup=after_number_inline_s1s2(number, range_val)
             )
-            if chat_id not in user_msg:
-                user_msg[chat_id] = sent_message.message_id
+            user_msg[chat_id] = sent_message.message_id
         except Exception as e:
             logger.error(f"update_msg error: {e}")
 
@@ -2086,14 +2085,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new and JOIN_CHANNEL_USERNAME:
         ch1_joined, ch2_joined = await check_all_channels_joined(user_id, context.bot)
         if not ch1_joined or not ch2_joined:
-            keyboard_buttons = []
-            if not ch1_joined:
-                keyboard_buttons.append([safe_channel_button("🔗 Main Channel")])
-            if not ch2_joined and CHANNEL2_LINK:
-                keyboard_buttons.append([InlineKeyboardButton(f"🔗 {CHANNEL2_NAME}", url=CHANNEL2_LINK)])
-            keyboard_buttons.append([InlineKeyboardButton("✅ Verify", callback_data="verify_join")])
+            keyboard_buttons = [
+                [InlineKeyboardButton("🔗 Main Channel", url=JOIN_CHANNEL_LINK)],
+                [InlineKeyboardButton("🔗 OTP Channel", url=OTP_CHANNEL_JOIN_LINK)],
+                [InlineKeyboardButton("🔗 Backup Channel", url=BACKUP_CHANNEL_LINK)],
+                [InlineKeyboardButton("✅ Verify", callback_data="verify_join")],
+            ]
             await update.message.reply_text(
-                "🚦 Access Locked!\n\nAll channels join করুন তারপর Verify করুন।",
+                "🚦 Access Locked!\n\nসব channel join করুন\nতারপর Verify করুন।",
                 reply_markup=InlineKeyboardMarkup(keyboard_buttons)
             )
             return
@@ -2658,13 +2657,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             user_msg[chat_id] = new_msg.message_id
         else:
-            keyboard_buttons = []
-            if not ch1_joined:
-                keyboard_buttons.append([safe_channel_button("🔗 Main Channel")])
-            if not ch2_joined and CHANNEL2_LINK:
-                keyboard_buttons.append([InlineKeyboardButton(f"🔗 {CHANNEL2_NAME}", url=CHANNEL2_LINK)])
-            keyboard_buttons.append([InlineKeyboardButton("✅ Verify", callback_data="verify_join")])
-            await safe_edit(query, "🚦 এখনো join করা হয়নি। Join করুন তারপর Verify করুন।",
+            keyboard_buttons = [
+                [InlineKeyboardButton("🔗 Main Channel", url=JOIN_CHANNEL_LINK)],
+                [InlineKeyboardButton("🔗 OTP Channel", url=OTP_CHANNEL_JOIN_LINK)],
+                [InlineKeyboardButton("🔗 Backup Channel", url=BACKUP_CHANNEL_LINK)],
+                [InlineKeyboardButton("✅ Verify", callback_data="verify_join")],
+            ]
+            await safe_edit(query, "🚦 এখনো join করা হয়নি।\n\nসব channel join করুন\nতারপর Verify করুন।",
                 reply_markup=InlineKeyboardMarkup(keyboard_buttons))
         return
 
