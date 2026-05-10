@@ -575,7 +575,9 @@ def s3_find_users_by_number(number):
         if session.get("number") == number:
             try:
                 session_time = datetime.fromisoformat(session["assigned_time"])
-                if datetime.now() - session_time < timedelta(minutes=30):
+                # Admin এর জন্য 120 মিনিট, বাকিদের জন্য 60 মিনিট
+                limit = timedelta(minutes=120) if int(uid) == ADMIN_ID else timedelta(minutes=60)
+                if datetime.now() - session_time < limit:
                     matched.append(uid)
             except Exception:
                 matched.append(uid)
@@ -1840,16 +1842,14 @@ async def poll_otps_s3(context):
                             f"🆕 NEW OTP — {escape_mdv2(detected_app_cap)} \\[S3\\]\n\n"
                             f"{flag} {escape_mdv2(country_name)}\n\n"
                             f"📱 `\\+{escape_mdv2(hidden)}`\n"
-                            f"🔑 `{escape_mdv2(otp_code)}`\n"
-                            f"🕒 {escape_mdv2(dt)}\n\n"
+                            f"🔑 `{escape_mdv2(otp_code)}`\n\n"
                             f"━━━━━━━━━━━━━━━\n📩 SMS:\n{quoted_sms}"
                         )
                     else:
                         channel_msg = (
                             f"📩 NEW SMS — {escape_mdv2(detected_app_cap)} \\[S3\\]\n\n"
                             f"{flag} {escape_mdv2(country_name)}\n\n"
-                            f"📱 `\\+{escape_mdv2(hidden)}`\n"
-                            f"🕒 {escape_mdv2(dt)}\n\n"
+                            f"📱 `\\+{escape_mdv2(hidden)}`\n\n"
                             f"━━━━━━━━━━━━━━━\n📩 SMS:\n{quoted_sms}"
                         )
 
@@ -1863,14 +1863,14 @@ async def poll_otps_s3(context):
                             plain_msg = (
                                 f"🆕 NEW OTP — {detected_app_cap} [S3]\n\n"
                                 f"{flag} {country_name}\n\n"
-                                f"📱 +{hidden}\n🔑 {otp_code}\n🕒 {dt}\n\n"
+                                f"📱 +{hidden}\n🔑 {otp_code}\n\n"
                                 f"📩 SMS:\n{message[:300]}"
                             )
                         else:
                             plain_msg = (
                                 f"📩 NEW SMS — {detected_app_cap} [S3]\n\n"
                                 f"{flag} {country_name}\n\n"
-                                f"📱 +{hidden}\n🕒 {dt}\n\n"
+                                f"📱 +{hidden}\n\n"
                                 f"📩 SMS:\n{message[:300]}"
                             )
                         ch_sent = await _s3_send_with_retry(
@@ -2871,6 +2871,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["otp_active"] = False
         user_data[user_id]["otp_running"] = False
         user_data[user_id]["last_number"] = None
+        # পুরানো number card message delete করো
+        chat_id = query.message.chat.id
+        if chat_id in user_msg:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=user_msg[chat_id])
+            except Exception:
+                pass
+            user_msg.pop(chat_id, None)
         try:
             await query.message.delete()
         except Exception:
