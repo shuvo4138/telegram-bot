@@ -464,21 +464,23 @@ async def add_numbers_to_pool(bot, pool_key, new_numbers):
     return added, skipped
 
 async def remove_number_from_pool(bot, pool_key, number):
-    """Soft delete — status = dead (history থাকবে)."""
+    """Permanent delete — memory pool + Supabase row DELETE (restart এর পরেও ফিরে আসবে না)."""
+    # Memory pool থেকে সরাও
     nums = numbers_pool.get(pool_key, [])
     if number in nums:
         nums.remove(number)
         numbers_pool[pool_key] = nums
+    # Supabase থেকে permanently DELETE (soft delete নয়)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            await client.patch(
+            resp = await client.delete(
                 f"{SUPABASE_URL}/rest/v1/s3_numbers",
                 params={"number": f"eq.{number}"},
-                headers=_sb_headers(),
-                json={"status": "dead"}
+                headers=_sb_headers()
             )
+        logger.info(f"🗑 Permanent delete: {number} | pool={pool_key} | status={resp.status_code}")
     except Exception as e:
-        logger.error(f"remove_number_from_pool error: {e}")
+        logger.error(f"remove_number_from_pool permanent delete error: {e}")
 
 async def mark_number_assigned(number, user_id):
     """available → assigned"""
@@ -1720,157 +1722,208 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
 #              S3 — OTP POLLING (CR API)
 # ══════════════════════════════════════════════════════════
 
+async def _s3_send_with_retry(bot, chat_id, text, parse_mode=None, reply_markup=None, max_retries=3):
+    """Telegram send with auto-retry — silent fail নেই, log থাকবে।"""
+    import hashlib as _hl
+    for attempt in range(1, max_retries + 1):
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
+            return True
+        except Exception as e:
+            err = str(e).lower()
+            if "retry after" in err or "flood" in err:
+                wait = int(re.search(r'\d+', str(e)).group() or 5)
+                logger.warning(f"S3 flood wait {wait}s (attempt {attempt})")
+                await asyncio.sleep(wait + 1)
+            elif attempt < max_retries:
+                logger.warning(f"S3 send fail attempt {attempt}: {e}")
+                await asyncio.sleep(2 * attempt)
+            else:
+                logger.error(f"S3 send FINAL FAIL after {max_retries} attempts: {e}")
+                return False
+    return False
+
+# S3 OTP processing lock — async race condition এড়াতে
+_s3_poll_lock = asyncio.Lock()
+
 async def poll_otps_s3(context):
-    try:
-        if len(otp_cache) > 5000:
-            otp_cache.clear()
+    # Race condition fix: একসাথে দুইটা poll চলবে না
+    if _s3_poll_lock.locked():
+        logger.debug("S3 poll skipped — previous poll still running")
+        return
 
-        # Clean expired sessions (30 min)
-        for uid in list(s3_user_sessions.keys()):
-            session = s3_user_sessions.get(uid, {})
-            try:
-                session_time = datetime.fromisoformat(session.get("assigned_time", ""))
-                if datetime.now() - session_time > timedelta(minutes=30):
-                    s3_user_sessions.pop(uid, None)
-            except Exception:
-                pass
+    async with _s3_poll_lock:
+        try:
+            import hashlib
+            if len(otp_cache) > 5000:
+                # পুরো clear না করে পুরানো half সরাই (recent OTP হারাবে না)
+                keys = list(otp_cache.keys())
+                for k in keys[:2500]:
+                    otp_cache.pop(k, None)
+                logger.info("S3 OTP cache trimmed to ~2500")
 
-        # OTP channel — দুইটা button: Main Channel + Number Bot
-        _s3_kb_buttons = []
-        _s3_ch_link = OTP_CHANNEL_LINK or MAIN_CHANNEL_LINK or JOIN_CHANNEL_LINK or ""
-        if _s3_ch_link and len(_s3_ch_link) > 10:
-            _s3_kb_buttons.append(InlineKeyboardButton("📢 Main Channel", url=_s3_ch_link))
-        if BOT_USERNAME:
-            _s3_kb_buttons.append(InlineKeyboardButton("🤖 Number Bot", url=f"https://t.me/{BOT_USERNAME}"))
-        otp_channel_keyboard = InlineKeyboardMarkup([_s3_kb_buttons]) if _s3_kb_buttons else None
-
-        cr_otps = await fetch_cr_api_otps()
-        for otp_data in cr_otps:
-            try:
-                number = otp_data.get("num", "").strip()
-                message = otp_data.get("message", "").strip()
-                dt = otp_data.get("dt", "").strip()
-                if not number or not message or not dt:
-                    continue
-
-                # Duplicate check: number + dt + message দিয়ে (OTP নির্ভর নয়)
-                import hashlib
-                msg_hash = hashlib.md5(message.encode()).hexdigest()[:8]
-                cache_key = f"s3:{number}:{dt}:{msg_hash}"
-                if cache_key in otp_cache:
-                    continue
-
-                otp_cache[cache_key] = True
-
-                # BOT_START_TIME এর আগের OTP skip করো (cache clear হলেও পুরানো OTP আসবে না)
+            # Clean expired sessions (30 min)
+            for uid in list(s3_user_sessions.keys()):
+                session = s3_user_sessions.get(uid, {})
                 try:
-                    otp_dt = datetime.strptime(dt[:19], "%Y-%m-%d %H:%M:%S")
-                    if otp_dt < BOT_START_TIME:
-                        otp_cache[cache_key] = True  # cache এ রাখো যাতে পরেও skip হয়
-                        continue
+                    session_time = datetime.fromisoformat(session.get("assigned_time", ""))
+                    if datetime.now() - session_time > timedelta(minutes=30):
+                        s3_user_sessions.pop(uid, None)
                 except Exception:
                     pass
 
-                otp_code = extract_otp(message)
-                country = extract_country_code_from_number(number)
-                flag = COUNTRY_FLAGS_CODE.get(country, "🌍")
-                hidden = hide_number(number)
-                country_name = COUNTRY_NAMES_CODE.get(country, "Unknown")
+            # OTP channel keyboard
+            _s3_kb_buttons = []
+            _s3_ch_link = OTP_CHANNEL_LINK or MAIN_CHANNEL_LINK or JOIN_CHANNEL_LINK or ""
+            if _s3_ch_link and len(_s3_ch_link) > 10:
+                _s3_kb_buttons.append(InlineKeyboardButton("📢 Main Channel", url=_s3_ch_link))
+            if BOT_USERNAME:
+                _s3_kb_buttons.append(InlineKeyboardButton("🤖 Number Bot", url=f"https://t.me/{BOT_USERNAME}"))
+            otp_channel_keyboard = InlineKeyboardMarkup([_s3_kb_buttons]) if _s3_kb_buttons else None
 
-                # Detect app from SMS message text (CLI সবসময় FACEBOOK দেয়, তাই message থেকে detect)
-                detected_app = detect_app_from_message(message, default_app="FACEBOOK")
-                detected_app_cap = detected_app.capitalize()
+            cr_otps = await fetch_cr_api_otps()
+            fetched_count = len(cr_otps)
+            sent_count = skipped_count = 0
+            logger.info(f"S3 poll: fetched {fetched_count} OTPs from CR API")
 
-                # Channel message — OTP থাকলে OTP দেখাও, না থাকলে RAW SMS পাঠাও
-                quoted_sms = "\n".join(
-                    f">{escape_mdv2(line)}" for line in message.splitlines() if line.strip()
-                )
-                if otp_code:
-                    channel_msg = (
-                        f"🆕 NEW OTP — {escape_mdv2(detected_app_cap)} \\[S3\\]\n\n"
-                        f"{flag} {escape_mdv2(country_name)}\n\n"
-                        f"📱 `\\+{escape_mdv2(hidden)}`\n"
-                        f"🔑 `{escape_mdv2(otp_code)}`\n"
-                        f"🕒 {escape_mdv2(dt)}\n\n"
-                        f"━━━━━━━━━━━━━━━\n📩 SMS:\n{quoted_sms}"
-                    )
-                else:
-                    channel_msg = (
-                        f"📩 NEW SMS — {escape_mdv2(detected_app_cap)} \\[S3\\]\n\n"
-                        f"{flag} {escape_mdv2(country_name)}\n\n"
-                        f"📱 `\\+{escape_mdv2(hidden)}`\n"
-                        f"🕒 {escape_mdv2(dt)}\n\n"
-                        f"━━━━━━━━━━━━━━━\n📩 SMS:\n{quoted_sms}"
-                    )
+            for otp_data in cr_otps:
                 try:
-                    await context.bot.send_message(
-                        chat_id=OTP_CHANNEL_ID,
-                        text=channel_msg,
-                        parse_mode="MarkdownV2",
-                        reply_markup=otp_channel_keyboard
+                    number = otp_data.get("num", "").strip()
+                    message = otp_data.get("message", "").strip()
+                    dt = otp_data.get("dt", "").strip()
+                    if not number or not message or not dt:
+                        logger.debug(f"S3 skip — missing field: num={number!r} dt={dt!r}")
+                        skipped_count += 1
+                        continue
+
+                    # Improved duplicate detection: number + dt + full message hash
+                    msg_hash = hashlib.md5(message.encode()).hexdigest()[:12]
+                    cache_key = f"s3:{number}:{dt}:{msg_hash}"
+                    if cache_key in otp_cache:
+                        skipped_count += 1
+                        continue
+
+                    # BOT_START_TIME এর আগের OTP skip (cache এ mark করো)
+                    try:
+                        otp_dt = datetime.strptime(dt[:19], "%Y-%m-%d %H:%M:%S")
+                        if otp_dt < BOT_START_TIME:
+                            otp_cache[cache_key] = True
+                            skipped_count += 1
+                            continue
+                    except Exception:
+                        pass
+
+                    # Cache তে mark করো BEFORE send (duplicate race condition fix)
+                    otp_cache[cache_key] = True
+
+                    otp_code = extract_otp(message)
+                    country = extract_country_code_from_number(number)
+                    flag = COUNTRY_FLAGS_CODE.get(country, "🌍")
+                    hidden = hide_number(number)
+                    country_name = COUNTRY_NAMES_CODE.get(country, "Unknown")
+                    detected_app = detect_app_from_message(message, default_app="FACEBOOK")
+                    detected_app_cap = detected_app.capitalize()
+
+                    logger.info(f"S3 OTP processing: num={hidden} otp={otp_code or 'N/A'} app={detected_app_cap} dt={dt}")
+
+                    # Channel message
+                    quoted_sms = "\n".join(
+                        f">{escape_mdv2(line)}" for line in message.splitlines() if line.strip()
                     )
-                except Exception:
                     if otp_code:
-                        plain_msg = (
-                            f"🆕 NEW OTP — {detected_app_cap} [S3]\n\n"
-                            f"{flag} {country_name}\n\n"
-                            f"📱 +{hidden}\n🔑 {otp_code}\n🕒 {dt}\n\n"
-                            f"📩 SMS:\n{message[:300]}"
+                        channel_msg = (
+                            f"🆕 NEW OTP — {escape_mdv2(detected_app_cap)} \\[S3\\]\n\n"
+                            f"{flag} {escape_mdv2(country_name)}\n\n"
+                            f"📱 `\\+{escape_mdv2(hidden)}`\n"
+                            f"🔑 `{escape_mdv2(otp_code)}`\n"
+                            f"🕒 {escape_mdv2(dt)}\n\n"
+                            f"━━━━━━━━━━━━━━━\n📩 SMS:\n{quoted_sms}"
                         )
                     else:
-                        plain_msg = (
-                            f"📩 NEW SMS — {detected_app_cap} [S3]\n\n"
-                            f"{flag} {country_name}\n\n"
-                            f"📱 +{hidden}\n🕒 {dt}\n\n"
-                            f"📩 SMS:\n{message[:300]}"
+                        channel_msg = (
+                            f"📩 NEW SMS — {escape_mdv2(detected_app_cap)} \\[S3\\]\n\n"
+                            f"{flag} {escape_mdv2(country_name)}\n\n"
+                            f"📱 `\\+{escape_mdv2(hidden)}`\n"
+                            f"🕒 {escape_mdv2(dt)}\n\n"
+                            f"━━━━━━━━━━━━━━━\n📩 SMS:\n{quoted_sms}"
                         )
-                    try:
-                        await context.bot.send_message(
-                            chat_id=OTP_CHANNEL_ID,
-                            text=plain_msg,
-                            reply_markup=otp_channel_keyboard
-                        )
-                    except Exception as e:
-                        logger.warning(f"Channel send failed: {e}")
 
-                # User inbox notification (শুধু matched user এর number এ SMS/OTP এলে)
-                matched_users = s3_find_users_by_number(number)
-                for uid in matched_users:
-                    try:
-                        session = s3_get_session(int(uid))
-                        pool_key = session.get("pool_key", "") if session else ""
-                        inbox_label = get_short_label(pool_key) if pool_key else f"{flag} Facebook"
-                        time_only = dt.split(" ")[-1] if " " in dt else dt
-
+                    # MarkdownV2 চেষ্টা করো, fail হলে plain text fallback
+                    ch_sent = await _s3_send_with_retry(
+                        context.bot, OTP_CHANNEL_ID, channel_msg,
+                        parse_mode="MarkdownV2", reply_markup=otp_channel_keyboard
+                    )
+                    if not ch_sent:
                         if otp_code:
-                            inbox_msg = (
-                                f"🔔 OTP এসেছে!\n\n"
-                                f"{inbox_label} 🟢\n"
-                                f"📱 `+{number}`\n"
-                                f"🔐 OTP: `{otp_code}`\n"
-                                f"⏰ {time_only}"
+                            plain_msg = (
+                                f"🆕 NEW OTP — {detected_app_cap} [S3]\n\n"
+                                f"{flag} {country_name}\n\n"
+                                f"📱 +{hidden}\n🔑 {otp_code}\n🕒 {dt}\n\n"
+                                f"📩 SMS:\n{message[:300]}"
                             )
                         else:
-                            inbox_msg = (
-                                f"📩 SMS এসেছে!\n\n"
-                                f"{inbox_label} 🟢\n"
-                                f"📱 `+{number}`\n"
-                                f"⏰ {time_only}\n\n"
-                                f"📩 {message[:200]}"
+                            plain_msg = (
+                                f"📩 NEW SMS — {detected_app_cap} [S3]\n\n"
+                                f"{flag} {country_name}\n\n"
+                                f"📱 +{hidden}\n🕒 {dt}\n\n"
+                                f"📩 SMS:\n{message[:300]}"
                             )
-                        await context.bot.send_message(
-                            chat_id=int(uid),
-                            text=inbox_msg,
-                            parse_mode="Markdown"
+                        ch_sent = await _s3_send_with_retry(
+                            context.bot, OTP_CHANNEL_ID, plain_msg,
+                            reply_markup=otp_channel_keyboard
                         )
-                    except Exception as e:
-                        logger.error(f"S3 Inbox error [{uid}]: {e}")
 
-            except Exception as e:
-                logger.error(f"S3 OTP process error: {e}")
+                    if ch_sent:
+                        sent_count += 1
+                    else:
+                        logger.error(f"S3 channel send FAILED completely for {hidden}")
 
-    except Exception as e:
-        logger.error(f"poll_otps_s3 error: {e}")
+                    # User inbox notification
+                    matched_users = s3_find_users_by_number(number)
+                    for uid in matched_users:
+                        try:
+                            session = s3_get_session(int(uid))
+                            pool_key = session.get("pool_key", "") if session else ""
+                            inbox_label = get_short_label(pool_key) if pool_key else f"{flag} Facebook"
+                            time_only = dt.split(" ")[-1] if " " in dt else dt
+
+                            if otp_code:
+                                inbox_msg = (
+                                    f"🔔 OTP এসেছে!\n\n"
+                                    f"{inbox_label} 🟢\n"
+                                    f"📱 `+{number}`\n"
+                                    f"🔐 OTP: `{otp_code}`\n"
+                                    f"⏰ {time_only}"
+                                )
+                            else:
+                                inbox_msg = (
+                                    f"📩 SMS এসেছে!\n\n"
+                                    f"{inbox_label} 🟢\n"
+                                    f"📱 `+{number}`\n"
+                                    f"⏰ {time_only}\n\n"
+                                    f"📩 {message[:200]}"
+                                )
+                            inbox_sent = await _s3_send_with_retry(
+                                context.bot, int(uid), inbox_msg,
+                                parse_mode="Markdown"
+                            )
+                            if not inbox_sent:
+                                logger.error(f"S3 Inbox FAILED [{uid}] for {hidden}")
+                        except Exception as e:
+                            logger.error(f"S3 Inbox error [{uid}]: {e}")
+
+                except Exception as e:
+                    logger.error(f"S3 OTP process error: {e}")
+
+            logger.info(f"S3 poll done: fetched={fetched_count} sent={sent_count} skipped={skipped_count}")
+
+        except Exception as e:
+            logger.error(f"poll_otps_s3 error: {e}")
 
 # ══════════════════════════════════════════════════════════
 #              LIVE SMS POST (S1/S2 Channel)
@@ -1879,6 +1932,11 @@ async def poll_otps_s3(context):
 LAST_POST_MESSAGE_ID = None
 LAST_POST_TEXT = ""
 _job_is_running = False
+
+# ── S1/S2 Range Post Rate Control ──
+# Max 4 posts per minute total: S1=2, S2=2
+RANGE_POST_MAX_PER_PANEL = 2          # S1 max 2, S2 max 2
+RANGE_POST_DELAY_BETWEEN = 15         # 15 seconds between each post (flood safe)
 
 async def job_post_live_sms(context):
     global _posted_sms_ids, _job_is_running, LAST_POST_MESSAGE_ID, LAST_POST_TEXT
@@ -1905,10 +1963,12 @@ async def job_post_live_sms(context):
         from datetime import timezone, timedelta as _td
         now_bd = datetime.now(timezone(_td(hours=6)))
 
+        # S1 এবং S2 আলাদাভাবে process, overlap নেই
+        # প্রতি panel এ সর্বোচ্চ RANGE_POST_MAX_PER_PANEL টা post
         for panel_label, logs in [("S1", s1_logs), ("S2", s2_logs)]:
-            panel_post_count = 0  # প্রতি panel এ সর্বোচ্চ 7টা post
+            panel_post_count = 0
             for log in logs:
-                if panel_post_count >= 7:
+                if panel_post_count >= RANGE_POST_MAX_PER_PANEL:
                     break
                 app = (log.get("app_name") or log.get("app") or "").replace("*", "").strip().upper()
                 if app != "FACEBOOK":
@@ -1972,9 +2032,15 @@ async def job_post_live_sms(context):
                         reply_markup=keyboard
                     )
                     panel_post_count += 1
-                    await asyncio.sleep(2)
+                    logger.info(f"📤 Range post sent: {panel_label} | {display_range} | count={panel_post_count}/{RANGE_POST_MAX_PER_PANEL}")
+                    # Flood avoid: প্রতি post এর পরে delay
+                    await asyncio.sleep(RANGE_POST_DELAY_BETWEEN)
                 except Exception as e:
                     logger.error(f"Live SMS post error: {e}")
+
+            # S1 শেষ হলে S2 শুরুর আগে অতিরিক্ত pause (overlap এড়াতে)
+            if panel_label == "S1" and panel_post_count > 0:
+                await asyncio.sleep(RANGE_POST_DELAY_BETWEEN)
 
     finally:
         _job_is_running = False
@@ -3106,9 +3172,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pool_key in numbers_pool:
             count = len(numbers_pool[pool_key])
             del numbers_pool[pool_key]
-            await _save_numbers(context.bot)
+            # Supabase থেকে pool_key এর সব number permanently DELETE
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.delete(
+                        f"{SUPABASE_URL}/rest/v1/s3_numbers",
+                        params={"pool_key": f"eq.{pool_key}"},
+                        headers=_sb_headers()
+                    )
+                logger.info(f"🗑 Pool permanent delete: {pool_key} | {count} numbers | status={resp.status_code}")
+            except Exception as e:
+                logger.error(f"Pool delete Supabase error: {e}")
             await safe_edit(query,
-                f"✅ *Pool Deleted!*\n\n🌍 Pool: `{pool_key}`\n🗑 Removed: `{count}` numbers",
+                f"✅ *Pool Permanently Deleted!*\n\n🌍 Pool: `{pool_key}`\n🗑 Removed: `{count}` numbers\n⚠️ Redeploy এর পরেও ফিরে আসবে না",
                 parse_mode="Markdown"
             )
         else:
