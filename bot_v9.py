@@ -769,7 +769,7 @@ class S2SessionPool:
             if self.initialized:
                 return
             results = []
-            for i in range(13):
+            for i in range(35):
                 r = await self._login_once()
                 results.append(r)
                 await asyncio.sleep(3)
@@ -778,10 +778,10 @@ class S2SessionPool:
             for r in results:
                 if isinstance(r, dict) and r.get("token"):
                     self.all_sessions.append(r)
-                    if number_count < 10:
+                    if number_count < 20:
                         await self.number_sessions.put(r)
                         number_count += 1
-                    elif otp_count < 3:
+                    elif otp_count < 15:
                         await self.otp_sessions.put(r)
                         otp_count += 1
             self.initialized = True
