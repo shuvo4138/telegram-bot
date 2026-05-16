@@ -2490,8 +2490,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fb_count = sum(len(v) for k, v in pool.items() if k.endswith("_fb"))
     ig_count = sum(len(v) for k, v in pool.items() if k.endswith("_ig"))
     inline_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🔵 Facebook ({fb_count})", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
-        [InlineKeyboardButton(f"📸 Instagram ({ig_count})", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
+        [InlineKeyboardButton(f"🔵 Facebook ({fb_count}) S3", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
+        [InlineKeyboardButton(f"📸 Instagram ({ig_count}) S3", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
         [InlineKeyboardButton("📘 Facebook S1", callback_data="select_panel_S1", api_kwargs={"style": "primary"})],
         [InlineKeyboardButton("📗 Facebook S2", callback_data="select_panel_S2", api_kwargs={"style": "primary"})],
     ])
@@ -2615,8 +2615,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fb_count = sum(len(v) for k, v in pool.items() if k.endswith("_fb"))
             ig_count = sum(len(v) for k, v in pool.items() if k.endswith("_ig"))
             inline_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"🔵 Facebook ({fb_count})", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
-                [InlineKeyboardButton(f"📸 Instagram ({ig_count})", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
+                [InlineKeyboardButton(f"🔵 Facebook ({fb_count}) S3", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
+                [InlineKeyboardButton(f"📸 Instagram ({ig_count}) S3", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
                 [InlineKeyboardButton("📘 Facebook S1", callback_data="select_panel_S1", api_kwargs={"style": "primary"})],
                 [InlineKeyboardButton("📗 Facebook S2", callback_data="select_panel_S2", api_kwargs={"style": "primary"})],
             ])
@@ -2794,8 +2794,8 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = content.decode('utf-8', errors='ignore')
     filename = update.message.document.file_name
 
-    # Filename format: 91.txt or 91_s2.txt
-    country_match = re.match(r'(\d+(?:_s\d+)?)', filename, re.IGNORECASE)
+    # Filename format: 91.txt or 91_s2.txt or 91-s2.txt
+    country_match = re.match(r'(\d+(?:[_-]s\d+)?)', filename, re.IGNORECASE)
     if not country_match:
         await update.message.reply_text(
             "❌ *Invalid filename!*\n\nFormat: `91.txt` or `91_s2.txt`",
@@ -2803,7 +2803,7 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    base_pool_key = country_match.group(1).lower()
+    base_pool_key = country_match.group(1).lower().replace("-", "_")
     new_numbers = [
         line.strip().lstrip('+')
         for line in text.split('\n')
@@ -3070,8 +3070,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📱 *Please select a service:*",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"🔵 Facebook ({fb_count})", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
-                    [InlineKeyboardButton(f"📸 Instagram ({ig_count})", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
+                    [InlineKeyboardButton(f"🔵 Facebook ({fb_count}) S3", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
+                    [InlineKeyboardButton(f"📸 Instagram ({ig_count}) S3", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
                     [InlineKeyboardButton("📘 Facebook S1", callback_data="select_panel_S1", api_kwargs={"style": "primary"})],
                     [InlineKeyboardButton("📗 Facebook S2", callback_data="select_panel_S2", api_kwargs={"style": "primary"})],
                     [InlineKeyboardButton("◀️ Back", callback_data="back_app", api_kwargs={"style": "primary"})],
@@ -3422,8 +3422,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📱 *Please select a service:*",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"🔵 Facebook ({fb_count})", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
-                [InlineKeyboardButton(f"📸 Instagram ({ig_count})", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
+                [InlineKeyboardButton(f"🔵 Facebook ({fb_count}) S3", callback_data="s3app:fb", api_kwargs={"style": "primary"})],
+                [InlineKeyboardButton(f"📸 Instagram ({ig_count}) S3", callback_data="s3app:ig", api_kwargs={"style": "primary"})],
                 [InlineKeyboardButton("📘 Facebook S1", callback_data="select_panel_S1", api_kwargs={"style": "primary"})],
                 [InlineKeyboardButton("📗 Facebook S2", callback_data="select_panel_S2", api_kwargs={"style": "primary"})],
                 [InlineKeyboardButton("◀️ Back", callback_data="back_app", api_kwargs={"style": "primary"})],
