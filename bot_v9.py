@@ -838,16 +838,15 @@ async def _s2_delete_token_cache():
 
 class S2SessionPool:
     """
-    S2 (X.Mint) Session Pool — S1-style Eager Load
-    ────────────────────────────────────────────────
-    Number Sessions : 28 (eager load at startup)
-    OTP Sessions    :  8 (eager load at startup)
+    S2 (X.Mint) Session Pool — Production Grade
+    ─────────────────────────────────────────────
+    Number Sessions : 25-35 (lazy warmup)
+    OTP Sessions    : 8-10  (shared pool)
 
     Features:
-    • Eager startup — like S1, all sessions loaded at boot
-    • Staggered login delay (0.3-0.8s) — same as S1
-    • Relogin only on token expire — no arbitrary relogin
-    • Supabase token cache — keep (load first token on restart)
+    • Lazy startup — no flood at deploy
+    • Staggered warmup (random 5-15s delay)
+    • Token file cache — reuse on restart
     • Per-session asyncio.Lock — no conflicts
     • Semaphore — max concurrent API requests
     • Session cooldown after use
@@ -856,9 +855,9 @@ class S2SessionPool:
     • Flood detection log
     • Smart round-robin rotation
     """
-    S2_NUM_TARGET  = 28   # number sessions
-    S2_OTP_TARGET  = 8    # otp sessions
-    S2_TOTAL       = S2_NUM_TARGET + S2_OTP_TARGET  # 36
+    S2_NUM_TARGET  = 30   # number sessions (25-35 mid)
+    S2_OTP_TARGET  = 9    # otp sessions (8-10 mid)
+    S2_TOTAL       = S2_NUM_TARGET + S2_OTP_TARGET
     TOKEN_TTL      = 1200  # seconds (20 min)
     COOLDOWN       = 1.5   # seconds between reuse
     MAX_CONCURRENT = 8     # semaphore limit
@@ -873,6 +872,7 @@ class S2SessionPool:
         self.initialized      = False
         self.lock             = asyncio.Lock()
         self.semaphore        = asyncio.Semaphore(self.MAX_CONCURRENT)
+        self._warmup_started  = False
 
     def _get_session_lock(self, token):
         if token not in self._session_locks:
@@ -902,45 +902,54 @@ class S2SessionPool:
             await asyncio.sleep(wait)
         self._session_cool[token] = time.time()
 
-    async def initialize(self):
-        """Eager load — S1 style. Called at startup, all sessions loaded before bot is ready."""
+    async def _warmup(self):
+        """Lazy staggered warmup — called once on first real request."""
         async with self.lock:
             if self.initialized:
                 return
-            number_count = otp_count = 0
-
-            # Try Supabase token cache first (reuse on restart)
+            # Try token cache first (avoid login on restart)
             cached_token, cached_session = await _s2_load_token_cache()
             if cached_token:
                 s = {"token": cached_token, "session": cached_session, "time": time.time()}
                 self.all_sessions.append(s)
                 await self.number_sessions.put(s)
-                number_count = 1
                 logger.info("♻️  S2 reused cached token from Supabase")
 
-            logger.info("🚀 S2 Pool eager warmup starting...")
-            remaining = self.S2_TOTAL - (1 if cached_token else 0)
+            logger.info("🚀 S2 Pool lazy warmup starting (staggered)...")
+            number_count = 1 if cached_token else 0
+            otp_count = 0
 
-            for i in range(remaining):
+            for i in range(self.S2_TOTAL - (1 if cached_token else 0)):
                 r = await self._login_once()
-                if isinstance(r, dict) and r.get("token"):
+                if r.get("token"):
                     self.all_sessions.append(r)
                     if number_count < self.S2_NUM_TARGET:
                         await self.number_sessions.put(r)
                         number_count += 1
-                        # Save first new token to Supabase cache
-                        if number_count == 1 and not cached_token:
-                            await _s2_save_token_cache(r["token"], r.get("session", ""))
                     elif otp_count < self.S2_OTP_TARGET:
                         await self.otp_sessions.put(r)
                         otp_count += 1
-                # S1-style staggered delay (0.3-0.8s)
-                await asyncio.sleep(random.uniform(0.3, 0.8))
-                if (i + 1) % 10 == 0:
-                    logger.info(f"  S2 warmup progress: {i+1}/{remaining} | num={number_count} otp={otp_count}")
+                    # save first token to Supabase cache
+                    if number_count == 1 and not cached_token:
+                        await _s2_save_token_cache(r["token"], r.get("session", ""))
+                # staggered random delay (5-15s) — flood protection
+                delay = random.uniform(5, 15)
+                logger.info(f"  S2 warmup [{i+1}/{self.S2_TOTAL}] num={number_count} otp={otp_count} | next in {delay:.1f}s")
+                await asyncio.sleep(delay)
 
             self.initialized = True
             logger.info(f"✅ S2 Pool ready! Number: {number_count}, OTP: {otp_count}")
+
+    async def _ensure_ready(self):
+        if not self.initialized:
+            if not self._warmup_started:
+                self._warmup_started = True
+                asyncio.create_task(self._warmup())
+            # wait up to 60s for warmup
+            for _ in range(120):
+                if self.initialized:
+                    break
+                await asyncio.sleep(0.5)
 
     async def _login_once(self, _retry=0):
         try:
@@ -985,13 +994,16 @@ class S2SessionPool:
         return {}
 
     async def _get_valid_session(self, queue, pool_name):
-        # Wait for eager init to complete
+        # Wait for warmup — never fresh login during startup
         wait_elapsed = 0
         while not self.initialized:
             if wait_elapsed % 15 == 0:
-                logger.info(f"⏳ S2 {pool_name} waiting for init... ({wait_elapsed}s)")
+                logger.info(f"⏳ S2 {pool_name} waiting for warmup... ({wait_elapsed}s)")
             await asyncio.sleep(1)
             wait_elapsed += 1
+            if not self._warmup_started:
+                self._warmup_started = True
+                asyncio.create_task(self._warmup())
 
         # Try from queue
         for _ in range(queue.qsize() + 1):
@@ -1062,6 +1074,7 @@ class S2SessionPool:
     async def refresh_all(self):
         async with self.lock:
             self.initialized = False
+            self._warmup_started = False
             while not self.number_sessions.empty():
                 try: self.number_sessions.get_nowait()
                 except: break
@@ -1070,7 +1083,7 @@ class S2SessionPool:
                 except: break
             self.all_sessions.clear()
             self.disabled.clear()
-        await self.initialize()
+        await self._warmup()
 
 s1_pool = S1SessionPool()
 s2_pool = S2SessionPool()
@@ -1345,6 +1358,55 @@ async def get_all_ranges_for_country(app_name, country, panel="S1"):
             if r and r not in seen:
                 seen.add(r)
                 ranges.append({"range": r, "time": log.get("time", "")})
+    return ranges
+
+# ── Instagram range filter (SMS keyword scan) ──
+_ig_range_cache = {}  # key -> {"data": [...], "time": 0}
+IG_RANGE_CACHE_TTL = 1800  # 30 min
+
+async def get_instagram_countries(panel="S1"):
+    """All countries যেখানে Instagram SMS আছে।"""
+    cache_key = f"{panel}_ig_countries"
+    cached = _ig_range_cache.get(cache_key, {})
+    if cached.get("data") and (time.time() - cached.get("time", 0)) < IG_RANGE_CACHE_TTL:
+        return cached["data"]
+    logs = await get_console_logs_s2() if panel == "S2" else await get_console_logs_s1()
+    seen = set()
+    countries = []
+    for log in logs:
+        sms = (log.get("message") or log.get("sms") or log.get("body") or "").lower()
+        if "instagram" not in sms:
+            continue
+        country = log.get("country", "").strip()
+        if country and country not in seen:
+            seen.add(country)
+            countries.append(country)
+    _ig_range_cache[cache_key] = {"data": countries, "time": time.time()}
+    logger.info(f"📸 Instagram countries ({panel}): {countries}")
+    return countries
+
+async def get_instagram_ranges(country, panel="S1"):
+    """Country অনুযায়ী Instagram SMS আছে এমন range গুলো।"""
+    cache_key = f"{panel}_{country}_ig_ranges"
+    cached = _ig_range_cache.get(cache_key, {})
+    if cached.get("data") and (time.time() - cached.get("time", 0)) < IG_RANGE_CACHE_TTL:
+        return cached["data"]
+    logs = await get_console_logs_s2() if panel == "S2" else await get_console_logs_s1()
+    seen = set()
+    ranges = []
+    for log in logs:
+        sms = (log.get("message") or log.get("sms") or log.get("body") or "").lower()
+        if "instagram" not in sms:
+            continue
+        log_country = log.get("country", "").strip()
+        if log_country != country:
+            continue
+        r = log.get("range", "").strip()
+        if r and r not in seen:
+            seen.add(r)
+            ranges.append({"range": r, "time": log.get("time", "")})
+    _ig_range_cache[cache_key] = {"data": ranges, "time": time.time()}
+    logger.info(f"📸 Instagram ranges ({panel}, {country}): {[x['range'] for x in ranges]}")
     return ranges
 
 # ══════════════════════════════════════════════════════════
@@ -1677,6 +1739,9 @@ def country_select_inline(countries, app_name):
             row = []
     if row:
         buttons.append(row)
+    # Instagram button — panel same as current
+    first_panel = countries[0].get("panel", "S1") if countries and isinstance(countries[0], dict) else "S1"
+    buttons.append([InlineKeyboardButton("📸 Instagram", callback_data=f"ig_panel_{first_panel}", api_kwargs={"style": "success"})])
     buttons.append([InlineKeyboardButton("◀️ Back", callback_data=f"back_app", api_kwargs={"style": "primary"})])
     return InlineKeyboardMarkup(buttons)
 
@@ -2037,17 +2102,18 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
             pass
         user_msg.pop(chat_id, None)
 
-    # ── Parallel fetch of 2 numbers using different sessions ──
+    # ── Fetch numbers: Instagram → 1 number, others (Facebook etc.) → 2 numbers ──
     api_fn = api_get_number_s1 if panel == "S1" else api_get_number_s2
+    fetch_count = 1 if app == "INSTAGRAM" else 2
     results = await asyncio.gather(
-        api_fn(range_val, app),
-        api_fn(range_val, app),
+        *[api_fn(range_val, app) for _ in range(fetch_count)],
         return_exceptions=True
     )
 
     numbers  = []
     sessions = []
     country_r = ""
+    pool = s1_pool if panel == "S1" else s2_pool
 
     for res in results:
         if isinstance(res, Exception):
@@ -2064,10 +2130,13 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
                 sessions.append(sess)
                 if not country_r:
                     country_r = nd.get("country", "") or user_data[user_id].get("country", "")
+            else:
+                # duplicate number — return session
+                if sess:
+                    await pool.return_number_session(sess)
         else:
-            # return unused session
+            # failed fetch — return unused session
             if sess:
-                pool = s1_pool if panel == "S1" else s2_pool
                 await pool.return_number_session(sess)
 
     if numbers:
@@ -2086,7 +2155,10 @@ async def do_get_number(message, user_id, count=1, user_name="User", bot=None):
     tried_ranges.add(range_val)
 
     if country:
-        all_ranges = await get_all_ranges_for_country(app, country, panel=panel)
+        if app == "INSTAGRAM":
+            all_ranges = await get_instagram_ranges(country, panel=panel)
+        else:
+            all_ranges = await get_all_ranges_for_country(app, country, panel=panel)
         next_range = None
         for r in all_ranges:
             rv = r.get("range", "")
@@ -3216,6 +3288,61 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🛑 Auto OTP বন্ধ করা হয়েছে!")
         return
 
+    # ── Instagram panel select ──
+    if data.startswith("ig_panel_"):
+        panel = data.replace("ig_panel_", "")
+        user_data[user_id]["panel"] = panel
+        user_data[user_id]["app"] = "INSTAGRAM"
+        user_data[user_id]["country"] = None
+        user_data[user_id]["range"] = None
+        await safe_edit(query, "⏳ Instagram country লোড হচ্ছে...")
+        countries = await get_instagram_countries(panel=panel)
+        if not countries:
+            await safe_edit(query,
+                f"❌ {panel} তে এখন কোনো Instagram range নেই।\nকিছুক্ষণ পর আবার try করুন।",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data=f"select_panel_{panel}", api_kwargs={"style": "primary"})]]))
+            return
+        buttons = []
+        row = []
+        for i, country in enumerate(countries[:20]):
+            flag = get_flag_by_iso(country)
+            row.append(InlineKeyboardButton(
+                f"{flag} {country}",
+                callback_data=f"ig_country_{panel}_{country}",
+                api_kwargs={"style": "primary"}
+            ))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("◀️ Back", callback_data=f"select_panel_{panel}", api_kwargs={"style": "primary"})])
+        await safe_edit(query,
+            f"📸 Instagram {panel}\n\n🌍 Country select করুন:",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    # ── Instagram country → range select ──
+    if data.startswith("ig_country_"):
+        parts = data.replace("ig_country_", "").split("_", 1)
+        panel = parts[0]
+        country = parts[1] if len(parts) > 1 else ""
+        user_data[user_id]["panel"] = panel
+        user_data[user_id]["app"] = "INSTAGRAM"
+        user_data[user_id]["country"] = country
+        await safe_edit(query, "⏳ Instagram range লোড হচ্ছে...")
+        ranges = await get_instagram_ranges(country, panel=panel)
+        if not ranges:
+            await safe_edit(query,
+                f"❌ {country} তে কোনো Instagram range নেই।",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data=f"ig_panel_{panel}", api_kwargs={"style": "primary"})]]))
+            return
+        flag = get_flag_by_iso(country)
+        await safe_edit(query,
+            f"📸 Instagram {panel} — {flag} {country}\n\n📡 Range select করুন:",
+            reply_markup=range_select_inline(ranges, "INSTAGRAM", country))
+        return
+
     # ── Panel select ──
     if data.startswith("select_panel_"):
         panel = data.replace("select_panel_", "")
@@ -3354,12 +3481,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         panel = user_data[user_id].get("panel", "S1")
         user_data[user_id]["country"] = None
         await safe_edit(query, "⏳ Loading...")
-        countries = await get_countries_for_app(app_name, panel=panel)
-        country_list = [{"country": c, "panel": panel} for c in countries]
-        await safe_edit(query,
-            f"📘 {app_name} {panel}\n\n🌍 Country select করুন:",
-            reply_markup=country_select_inline(country_list, app_name)
-        )
+        if app_name == "INSTAGRAM":
+            countries = await get_instagram_countries(panel=panel)
+            if not countries:
+                await safe_edit(query, "❌ কোনো Instagram country নেই।",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data=f"select_panel_{panel}", api_kwargs={"style": "primary"})]]))
+                return
+            buttons = []
+            row = []
+            for country in countries[:20]:
+                flag = get_flag_by_iso(country)
+                row.append(InlineKeyboardButton(f"{flag} {country}", callback_data=f"ig_country_{panel}_{country}", api_kwargs={"style": "primary"}))
+                if len(row) == 2:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+            buttons.append([InlineKeyboardButton("◀️ Back", callback_data=f"select_panel_{panel}", api_kwargs={"style": "primary"})])
+            await safe_edit(query, f"📸 Instagram {panel}\n\n🌍 Country select করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            countries = await get_countries_for_app(app_name, panel=panel)
+            country_list = [{"country": c, "panel": panel} for c in countries]
+            await safe_edit(query,
+                f"📘 {app_name} {panel}\n\n🌍 Country select করুন:",
+                reply_markup=country_select_inline(country_list, app_name)
+            )
         return
 
     # ── Range select ──
