@@ -1651,11 +1651,16 @@ START_MENU_TEXT = (
 
 def main_keyboard(user_id):
     buttons = [
-        [KeyboardButton("📲 Get Number"), KeyboardButton("📡 Custom Range")],
-        [KeyboardButton("📋 My Numbers"), KeyboardButton("🚦 Live Traffic")],
-        [KeyboardButton("🛟 Support Admin")],
+        [KeyboardButton("📲 Get Number"),   KeyboardButton("📦 My Numbers")],
+        [KeyboardButton("📡 Custom Range"), KeyboardButton("🚦 Live Traffic")],
+        [KeyboardButton("👤 Profile"),      KeyboardButton("🆘 Support")],
     ]
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
+    return ReplyKeyboardMarkup(
+        buttons,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+    )
 
 def admin_keyboard_s1s2():
     return InlineKeyboardMarkup([
@@ -2714,7 +2719,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Number `+{number}` কোনো pool এ নেই", parse_mode="Markdown")
         return
 
-    if text in ("📲 Get Number",):
+    if text in ("📲 Get Number", "Get Number"):
         if user_id in processing_users:
             await query.answer("⏳ একটু অপেক্ষা করুন..." if False else "") if False else None
             return
@@ -2746,7 +2751,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             processing_users.discard(user_id)
         return
 
-    if text in ("📡 Custom Range",):
+    if text in ("📡 Custom Range", "Custom Range"):
         panel = user_data[user_id].get("panel", "S1")
         if panel == "S3":
             await update.message.reply_text("❌ S3 তে Custom Range নেই। S1 বা S2 select করুন।", reply_markup=main_keyboard(user_id))
@@ -2760,7 +2765,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if text in ("📋 My Numbers",):
+    if text in ("📦 My Numbers", "📋 My Numbers"):
         panel = user_data[user_id].get("panel", "S1")
         if panel == "S3":
             session = s3_get_session(user_id)
@@ -2853,13 +2858,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Data load error.", reply_markup=main_keyboard(user_id))
         return
 
-    if text == "🛟 Support Admin":
+    if text in ("🆘 Support", "🛟 Support Admin"):
         await update.message.reply_text(
-            "🛟 Support এর জন্য নিচের button এ click করুন:",
+            "🆘 Support এর জন্য নিচের button এ click করুন:",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🛟 Support Admin", url=SUPPORT_ADMIN_LINK, api_kwargs={"style": "primary"})
+                InlineKeyboardButton("🆘 Support Admin", url=SUPPORT_ADMIN_LINK, api_kwargs={"style": "primary"})
             ]])
         )
+        # Restore persistent keyboard
+        await context.bot.send_message(
+            chat_id=chat_id, text="⌨️", reply_markup=main_keyboard(user_id)
+        )
+        return
+
+    if text == "👤 Profile":
+        panel = user_data[user_id].get("panel", "S1")
+        app   = user_data[user_id].get("app", "FACEBOOK")
+        rng   = user_data[user_id].get("range", "—")
+        name  = user_data[user_id].get("name", "User")
+        msg = (
+            f"👤 <b>Profile</b>\n\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
+            f"👋 Name: {name}\n"
+            f"🖥 Panel: {panel}\n"
+            f"📱 App: {app}\n"
+            f"📡 Range: {rng}"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=main_keyboard(user_id))
         return
 
     if text == "📦 Bulk Number":
@@ -3259,6 +3284,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             cancel_all_otp_tasks(user_id)
             user_data[user_id].update({"range": None, "country": None, "otp_active": False, "otp_running": False})
+            # Restore persistent keyboard
+            await context.bot.send_message(
+                chat_id=chat_id, text="⌨️", reply_markup=main_keyboard(user_id)
+            )
             inline_kb = await panel_select_inline()
             new_msg = await context.bot.send_message(
                 chat_id=chat_id,
@@ -3526,6 +3555,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["auto_otp_cancel"] = False
         user_data[user_id]["otp_active"] = False
         user_data[user_id]["otp_running"] = False
+        # Restore persistent keyboard before deleting inline message
+        try:
+            await context.bot.send_message(
+                chat_id=query.message.chat.id,
+                text="⌨️",
+                reply_markup=main_keyboard(user_id)
+            )
+        except Exception:
+            pass
         try:
             await query.message.delete()
         except Exception:
